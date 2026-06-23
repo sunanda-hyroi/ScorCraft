@@ -12,6 +12,38 @@ import type { ScoreResult, CraftResult } from "./api";
 
 const CAT_KEYS = ["technical", "experience", "education", "stability"] as const;
 
+/**
+ * Raw `scores` DB row → ScoreResult.
+ *
+ * GET /api/v1/results returns persisted `scores` rows joined with the
+ * candidate (`select("*, candidates(name, email, phone)")`), so the shape
+ * differs from the inline ScoreResult that scoreBatch returns: the id is
+ * `id` (not `score_id`) and name/email/phone are nested under `candidates`.
+ * Normalize to ScoreResult so the same scoreResultToCandidate mapper applies.
+ */
+export function dbScoreRowToScoreResult(row: any): ScoreResult {
+  const cand = row.candidates || {};
+  return {
+    score_id: row.id,
+    candidate_name: cand.name || "Unknown",
+    candidate_email: cand.email ?? null,
+    candidate_phone: cand.phone ?? null,
+    overall_score: row.overall_score ?? 0,
+    recommendation: row.recommendation,
+    category_scores: row.category_scores || {},
+    matched_skills: row.matched_skills || [],
+    missing_skills: row.missing_skills || [],
+    red_flags: row.red_flags || [],
+    highlights: row.highlights || [],
+    ai_reasoning: row.ai_reasoning || "",
+  };
+}
+
+/** Convenience: raw `scores` DB row → UI candidate (reload path). */
+export function dbScoreRowToCandidate(row: any): Record<string, unknown> {
+  return scoreResultToCandidate(dbScoreRowToScoreResult(row));
+}
+
 /** Backend ScoreResult → UI candidate (results table + scorecard fields). */
 export function scoreResultToCandidate(r: ScoreResult): Record<string, unknown> {
   const categories: Record<string, number | null> = {};

@@ -4,6 +4,7 @@ import { useState, useCallback, useRef, useEffect } from "react";
 import * as api from "@/lib/api";
 import {
   scoreResultToCandidate,
+  dbScoreRowToCandidate,
   applyCraftResult,
   candidateToStructured,
   craftSettingsFrom,
@@ -557,7 +558,23 @@ export default function ScorCraft(){
     if(err) console.warn("[ScorCraft] live call failed → demo mode:",err?.message||err);
   },[]);
 
-  // On mount: probe backend; if configured, load live jobs.
+  // Reload a job's previously scored candidates from the backend. Lets a
+  // recruiter reopen the app (or switch jobs) and pick up where they left off
+  // without re-scoring. Returns the loaded count.
+  const loadJobResults=useCallback(async(jobId)=>{
+    if(!jobId)return 0;
+    try{
+      const rows=await api.getResults(jobId);
+      const mapped=(rows||[]).map(dbScoreRowToCandidate).sort((a,b)=>b.score-a.score);
+      setCandidates(mapped);
+      return mapped.length;
+    }catch(e){
+      fallbackToDemo(e);
+      return 0;
+    }
+  },[fallbackToDemo]);
+
+  // On mount: probe backend; if configured, load live jobs + their results.
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
@@ -569,12 +586,22 @@ export default function ScorCraft(){
           const js=await api.listJobs();
           if(cancelled)return;
           setJobs(js);
-          if(js.length)setActiveJob(js[0]);
+          if(js.length){
+            setActiveJob(js[0]);
+            await loadJobResults(js[0].id);
+          }
         }
       }catch(e){fallbackToDemo(e);}
     })();
     return()=>{cancelled=true;};
-  },[fallbackToDemo]);
+  },[fallbackToDemo,loadJobResults]);
+
+  // Switch the active live job and reload its persisted scores.
+  const selectJob=useCallback((job)=>{
+    setActiveJob(job);
+    setSelected(new Set());
+    if(!demoMode&&job?.id)loadJobResults(job.id);
+  },[demoMode,loadJobResults]);
 
   const jobIdForScoring=activeJob?.id||null;
   const jobTitle=activeJob?.title||MOCK_JOB.title;
@@ -684,9 +711,15 @@ export default function ScorCraft(){
         <div style={{marginBottom:14}}>
           <div style={S.label}>Live jobs (from backend)</div>
           <select style={{...S.input,maxWidth:360}} value={activeJob?.id||""}
-            onChange={e=>setActiveJob(jobs.find(j=>j.id===e.target.value)||null)}>
+            onChange={e=>selectJob(jobs.find(j=>j.id===e.target.value)||null)}>
             {jobs.map(j=><option key={j.id} value={j.id}>{j.title}</option>)}
           </select>
+          {!demoMode&&candidates.length>0&&(
+            <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10}}>
+              <span style={{fontSize:12,color:"#6B7280"}}>{candidates.length} previously scored candidate{candidates.length>1?"s":""} for this job.</span>
+              <button style={{...S.btnO,padding:"5px 12px",fontSize:12}} onClick={()=>setStep("results")}>Review results →</button>
+            </div>
+          )}
         </div>
       )}
       <div style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:10,padding:14}}>
