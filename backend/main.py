@@ -19,10 +19,17 @@ app = FastAPI(
     version="1.0.0",
 )
 
+# CORS — explicit allow-list (works with credentials, unlike "*"). Local dev +
+# the production Vercel origin (FRONTEND_URL, set after the frontend deploys),
+# plus a regex for Codespaces forwarded ports and Vercel preview deployments.
+_allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+if settings.FRONTEND_URL:
+    _allowed_origins.append(settings.FRONTEND_URL.rstrip("/"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_origin_regex="https://.*\\.app\\.github\\.dev",
+    allow_origins=_allowed_origins,
+    allow_origin_regex=r"https://.*\.(app\.github\.dev|vercel\.app)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,7 +60,7 @@ async def health():
     openai_ok = _is_real(settings.OPENAI_API_KEY)
     return {
         "status": "healthy",
-        "app": "ScorCraft",
+        "app": "RecruitCraft",
         "version": "1.0.0",
         "pipeline": "score → filter → craft → download",
         # `configured` tells the frontend whether live scoring/crafting is

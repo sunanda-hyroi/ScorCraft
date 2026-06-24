@@ -9,8 +9,18 @@ load_dotenv()
 
 class Settings:
     # ── App ──────────────────────────────────────────────────
-    APP_NAME: str = "ScorCraft by HYROI Solutions"
+    APP_NAME: str = "RecruitCraft by HYROI Solutions"
     APP_VERSION: str = "1.0.0"
+
+    # Port the server binds to. On Railway (and most PaaS) the platform injects
+    # PORT at runtime; locally it defaults to 8000. uvicorn is launched with
+    # --port $PORT (see Procfile / railway.toml), this mirrors it for any code
+    # that needs the value.
+    PORT: int = int(os.getenv("PORT", "8000"))
+
+    # Production frontend origin (Vercel URL) allowed by CORS. Set after the
+    # frontend is deployed, e.g. https://recruitcraft.vercel.app
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "")
 
     # ── Supabase ─────────────────────────────────────────────
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
