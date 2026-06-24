@@ -3,23 +3,27 @@ from typing import Optional, List, Dict, Any
 
 
 class JDCreate(BaseModel):
+    """Payload for creating/updating a job.
+
+    Mirrors the real `job_descriptions` table columns (must/good/bonus skill
+    arrays + per-category weight_* ints), NOT the old required_skills/
+    scoring_weights shape — those were never columns and made inserts fail
+    with PostgREST PGRST204 ("could not find the 'created_by' column ...").
+    """
     title: str
     description: str = ""
-    required_skills: List[Dict] = []
-    nice_to_have_skills: List[str] = []
-    skill_importance: Dict[str, str] = {}
-    experience_min: int = 0
-    experience_max: int = 99
-    education_required: str = ""
-    scoring_weights: Dict[str, Any] = {
-        "technical": 40,
-        "experience": 25,
-        "education": 10,
-        "soft_skills": 15,
-        "stability": 10
-    }
-    custom_instructions: str = ""
-    minimum_technical_score: Optional[int] = None
+    company: str = ""
+    location: str = ""
+    must_have_skills: List[str] = []
+    good_to_have_skills: List[str] = []
+    bonus_skills: List[str] = []
+    # jsonb: {skill: [alias, ...]} — consumed by the technical scorer.
+    skill_aliases: Dict[str, List[str]] = {}
+    weight_technical: int = 40
+    weight_experience: int = 25
+    weight_education: int = 15
+    weight_soft_skills: int = 10
+    weight_stability: int = 10
     shortlist_threshold: int = 75
     review_threshold: int = 55
 

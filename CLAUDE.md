@@ -1,8 +1,16 @@
-
-
-
+## Development Rules
+- Make file edits without asking for confirmation
+- Run tests automatically after changes
+- Install required packages when needed
+- Fix linting, typecheck, and build errors automatically
+- If a build or test fails, diagnose and fix it before reporting back
+- Continue until implementation is complete and verified
+- Only stop to ask me when you need a product decision, not a technical one
+- After any code change, run the relevant build/test command to verify
+- Restart servers when config or backend files change
 
 # ScorCraft by HYROI Solutions
+
 
 ## What is this?
 ScorCraft is a recruitment tool that scores resumes against jobs (ScorQ engine) and formats shortlisted ones into polished documents (CraftQ engine). Built for internal use by HYROI Solutions recruiters. Output shared with end clients.

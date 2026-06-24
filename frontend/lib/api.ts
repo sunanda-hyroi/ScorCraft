@@ -16,10 +16,15 @@
  * `configured: false` flag as "not live" so the demo works out of the box.
  */
 
-export const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE !== undefined
-    ? process.env.NEXT_PUBLIC_API_BASE
-    : ""; // "" → relative paths, proxied by Next rewrites
+// Absolute backend URL (Codespaces forwarded port) via NEXT_PUBLIC_API_URL,
+// falling back to NEXT_PUBLIC_API_BASE, then "" (relative paths proxied by
+// Next rewrites). Trailing slashes are stripped so `${API_BASE}/api/...`
+// never produces a double slash.
+export const API_BASE = (
+  process.env.NEXT_PUBLIC_API_URL ??
+  process.env.NEXT_PUBLIC_API_BASE ??
+  ""
+).replace(/\/+$/, "");
 
 /** Thrown when the backend can't serve a real response → use mock fallback. */
 export class DemoModeError extends Error {
@@ -119,14 +124,34 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 // ── Types (subset of backend shapes the UI consumes) ─────────────
+export interface JobVersionRef {
+  id: string;
+  version: number;
+  status?: string;
+  created_at?: string;
+}
+
 export interface Job {
   id: string;
   title: string;
+  company?: string;
+  location?: string;
+  description?: string;
+  status?: string; // active | draft | archived
+  must_have_skills?: string[];
+  good_to_have_skills?: string[];
+  bonus_skills?: string[];
   required_skills?: Array<Record<string, unknown>>;
   nice_to_have_skills?: string[];
   skill_importance?: Record<string, string>;
   scoring_weights?: Record<string, number>;
   shortlist_threshold?: number;
+  created_at?: string;
+  // Feature 2/3 annotations from GET /api/v1/jobs
+  candidates_scored_count?: number;
+  version?: number;
+  parent_job_id?: string | null;
+  previous_versions?: JobVersionRef[];
   [k: string]: unknown;
 }
 
@@ -211,6 +236,58 @@ export async function createJob(job: Partial<Job>): Promise<Job> {
     body: JSON.stringify(job),
   });
   return data.job;
+}
+
+/** JobDashboard edit → PUT /api/v1/jobs/:id (may create a new version) */
+export async function updateJob(jobId: string, job: Partial<Job>): Promise<Job> {
+  const data = await request<{ job: Job }>(`/api/v1/jobs/${jobId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(job),
+  });
+  return data.job;
+}
+
+/** JobDashboard kebab → Archive (soft) → DELETE /api/v1/jobs/:id */
+export async function archiveJob(jobId: string): Promise<void> {
+  await request(`/api/v1/jobs/${jobId}`, { method: "DELETE" });
+}
+
+/** JobDashboard kebab → Delete (hard) → DELETE /api/v1/jobs/:id?hard=true.
+ * Backend rejects (409) if candidates were scored against the job. */
+export async function deleteJob(jobId: string): Promise<void> {
+  await request(`/api/v1/jobs/${jobId}?hard=true`, { method: "DELETE" });
+}
+
+/** JobDashboard → GET /api/v1/jobs/:id (single job, e.g. to view a version) */
+export async function getJob(jobId: string): Promise<Job> {
+  const data = await request<{ job: Job }>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
+  return data.job;
+}
+
+/** JobCreator → POST /api/v1/jobs/extract-skills (JD text → skill list) */
+export async function extractSkills(description: string): Promise<string[]> {
+  const data = await request<{ skills: string[] }>("/api/v1/jobs/extract-skills", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+  });
+  return data.skills || [];
+}
+
+/** AliasPanel → POST /api/v1/jobs/suggest-aliases (skill → aliases + equivalents) */
+export async function suggestAliases(
+  skill: string
+): Promise<{ aliases: string[]; equivalents: string[] }> {
+  const data = await request<{ aliases?: string[]; equivalents?: string[] }>(
+    "/api/v1/jobs/suggest-aliases",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill }),
+    }
+  );
+  return { aliases: data.aliases || [], equivalents: data.equivalents || [] };
 }
 
 /** ResumeUploader → POST /api/v1/scoring/batch (multipart) */

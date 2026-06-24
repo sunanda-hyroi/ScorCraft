@@ -1,7 +1,11 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import * as api from "@/lib/api";
+import { supabase, TOKEN_KEY } from "@/lib/supabase";
+import JobCreator from "@/components/JobCreator";
+import JobDashboard from "@/components/JobDashboard";
 import {
   scoreResultToCandidate,
   dbScoreRowToCandidate,
@@ -16,243 +20,43 @@ const GOLD = "#C8963E";
 const INDIGO = "#4338CA";
 const BG = "#F7F8FA";
 
-// ─── Mock Data ───────────────────────────────────────────────────
-const MOCK_JOB = {
-  title: "Senior Data Engineer",
-  skills: ["Python","SQL Server","ETL Pipelines","Power BI","Azure","Data Modeling"],
-  mustHave: ["Python","SQL Server","ETL Pipelines"],
-  goodToHave: ["Power BI","Azure"],
-  bonus: ["Data Modeling"],
-  weights: { technical: 40, experience: 25, education: 15, soft_skills: 10, stability: 10 },
-};
+// Hardcoded ScorQ scoring weights — shown for reference only; the backend owns
+// these and they are not user-configurable. Also used as the display fallback
+// when a job row predates the weight_* columns.
+const DEFAULT_WEIGHTS = { technical: 40, experience: 25, education: 15, soft_skills: 10, stability: 10 };
 
-const mkCandidate = (id,name,email,phone,location,score,cats,matched,missing,highlights,redFlags,gaps,reasoning,skillDetails,employment,education,certifications,summary,coreComp,techComp) => ({
-  id,name,email,phone,location,score,categories:cats,matched,missing,highlights,redFlags,gaps,reasoning,skillDetails,employment,education,certifications,executive_summary:summary,core_competencies:coreComp,technical_competencies:techComp
-});
+// Neutral display shape for the results/scorecard views when no live job is
+// selected (no mock job — real jobs come from GET /api/v1/jobs).
+const EMPTY_JOB_VIEW = { title: "Job", weights: DEFAULT_WEIGHTS, mustHave: [], goodToHave: [], bonus: [], skills: [] };
 
-const MOCK_CANDIDATES = [
-  {
-    id:"1",name:"Assadullah Buriro",email:"assadburiro30@gmail.com",phone:"+92 301 2078438",location:"Karachi, Pakistan",
-    score:87,
-    categories:{technical:87,experience:100,education:null,stability:90},
-    matched:["Loan IQ","Finastra","implementations","API","Testing"],
-    missing:["Testing frameworks"],
-    highlights:[
-      "Worked on Finastra Fusion Loan IQ implementations, showcasing relevant domain expertise.",
-      "Designed RESTful APIs and conducted comprehensive unit testing, demonstrating strong technical skills."
-    ],
-    redFlags:[],
-    gaps:["No specific mention of testing methodologies or frameworks","Limited evidence of leadership roles"],
-    catReasoning:{
-      technical:"The candidate has solid experience with Loan IQ, having worked on implementations and customizations for Finastra Fusion Loan IQ, which is directly relevant to the role. They also have strong skills in API development and testing, demonstrated through their work on various projects. However, there is no specific mention of testing methodologies or frameworks used in relation to Loan IQ, which could be a gap.",
-      experience:"The candidate has over 14 years of experience, primarily in product companies, which is a positive signal. Their role at Telenor Bank involved direct work with Loan IQ, showcasing domain expertise. However, there is limited evidence of leadership roles or rapid career progression, which could enhance their experience score.",
-      education:"The candidate holds a Bachelor's degree in Information Technology, which aligns well with the technical requirements of the role.",
-      stability:"The candidate has a strong stability score, with tenure at companies like Telenor Bank and Systems Limited, indicating a consistent career path with durations ranging from 1.5 to 3 years."
-    },
-    reasoning:"The candidate demonstrates a strong technical fit with relevant experience in Loan IQ and API development, making them a suitable candidate for the role. Their extensive experience in product companies adds to their qualifications, although the lack of leadership roles may raise some concerns. Overall, I recommend considering this candidate for the position, given their relevant skills and experience.",
-    skillDetails:[
-      {skill:"Loan IQ",found:true,where:"Finastra implementations",level:"Expert"},
-      {skill:"Finastra",found:true,where:"Direct product work",level:"Expert"},
-      {skill:"implementations",found:true,where:"Multiple projects",level:"Advanced"},
-      {skill:"API",found:true,where:"RESTful API design",level:"Advanced"},
-      {skill:"Testing",found:true,where:"Unit testing",level:"Intermediate"},
-    ],
-    employment:[
-      {company:"Telenor Bank",role:"Senior Software Engineer",duration:"Jan 2022 – Present",location:"Karachi",
-        projects:[
-          {name:"Loan IQ Core Implementation",duration:"Jun 2023 – Present",responsibilities:["Led Finastra Fusion Loan IQ implementation and customization","Designed RESTful APIs for banking integration","Conducted comprehensive unit testing for all modules"],skills:"Loan IQ, Finastra, Java, REST APIs"},
-          {name:"Payment Gateway Integration",duration:"Jan 2022 – May 2023",responsibilities:["Integrated third-party payment systems with core banking","Developed API middleware for transaction processing"],skills:"Java, API Development, Integration"},
-        ]},
-      {company:"Systems Limited",role:"Software Engineer",duration:"Mar 2019 – Dec 2021",location:"Lahore",
-        projects:[
-          {name:"Enterprise Banking Platform",duration:"Mar 2019 – Dec 2021",responsibilities:["Developed microservices for banking operations","Implemented automated testing pipelines"],skills:"Java, Microservices, Testing"},
-        ]},
-      {company:"NetSol Technologies",role:"Junior Developer",duration:"Jul 2016 – Feb 2019",location:"Lahore",
-        projects:[
-          {name:"Financial Products Module",duration:"Jul 2016 – Feb 2019",responsibilities:["Built financial product configuration modules","Supported QA testing and bug resolution"],skills:"Java, SQL, Financial Products"},
-        ]},
-    ],
-    education:[{degree:"Bachelor of Science in Information Technology",institution:"University of Karachi",year:"2016"}],
-    certifications:[
-      {name:"Oracle Certified Java Programmer",issuer:"Oracle",expiry:"No Expiry"},
-      {name:"Finastra Fusion Loan IQ Specialist",issuer:"Finastra",expiry:null},
-    ],
-    executive_summary:[
-      "14+ years of experience in software engineering with deep expertise in financial services and banking technology",
-      "Hands-on implementation and customization experience with Finastra Fusion Loan IQ platform",
-      "Strong API development skills with focus on RESTful service design for banking integrations",
-      "Proven track record in product companies including Telenor Bank, Systems Limited, and NetSol Technologies",
-      "Comprehensive testing experience including unit testing and quality assurance for banking modules",
-      "Solid understanding of financial products, payment systems, and core banking operations",
-    ],
-    core_competencies:[
-      {domain:"Banking Technology",skills:"Loan IQ, Core Banking, Payment Systems",tools:"Finastra Fusion, Java, Spring Boot"},
-      {domain:"API Development",skills:"RESTful APIs, Integration, Middleware",tools:"Java, Spring, Swagger"},
-      {domain:"Testing & QA",skills:"Unit Testing, Test Automation",tools:"JUnit, Mockito"},
-    ],
-    technical_competencies:{programming_languages:"Java, SQL, JavaScript",tools_technologies:"Finastra Fusion Loan IQ, Spring Boot, REST APIs, Git",platforms:"Linux, Oracle DB, Azure"},
-  },
-  {
-    id:"2",name:"Priya Sharma",email:"priya.s@email.com",phone:"+91 9876543210",location:"Mumbai, India",
-    score:91,categories:{technical:95,experience:88,education:85,stability:90},
-    matched:["Python","SQL Server","ETL Pipelines","Power BI","Azure","Data Modeling"],missing:[],
-    highlights:["8 yrs experience","All 6 skills matched","AWS + Azure dual certified"],redFlags:[],gaps:[],
-    catReasoning:{
-      technical:"Exceptional technical profile. All 6 required skills explicitly demonstrated with advanced to expert proficiency. Has led enterprise-scale data engineering projects with measurable outcomes.",
-      experience:"8 years of directly relevant experience with progressive responsibility from engineer to lead. Led teams of 5+ engineers.",
-      education:"M.Tech from IIT Bombay in Data Science — strong academic foundation directly aligned with role requirements.",
-      stability:"Consistent career progression with reasonable tenures. No job-hopping concerns."
-    },
-    reasoning:"Exceptional candidate. All 6 required skills explicitly present with strong evidence. 8 years of directly relevant experience with progressive responsibility. Dual cloud certification demonstrates breadth. Top recommendation.",
-    skillDetails:[
-      {skill:"Python",found:true,where:"Primary language",level:"Expert"},
-      {skill:"SQL Server",found:true,where:"Database admin + queries",level:"Expert"},
-      {skill:"ETL Pipelines",found:true,where:"Enterprise pipelines",level:"Expert"},
-      {skill:"Power BI",found:true,where:"20+ dashboards",level:"Advanced"},
-      {skill:"Azure",found:true,where:"Certified",level:"Advanced"},
-      {skill:"Data Modeling",found:true,where:"Led initiatives",level:"Advanced"},
-    ],
-    employment:[
-      {company:"Infosys",role:"Lead Data Engineer",duration:"Jan 2022 – Present",location:"Mumbai",projects:[
-        {name:"Cloud Data Platform Migration",duration:"Jun 2023 – Present",responsibilities:["Architected cloud-native data platform on Azure","Led team of 5 engineers"],skills:"Azure, Python, ETL"},
-        {name:"Enterprise BI Modernization",duration:"Jan 2022 – May 2023",responsibilities:["Built 20+ Power BI dashboards","Implemented data modeling best practices"],skills:"Power BI, Data Modeling, SQL"},
-      ]},
-      {company:"Wipro",role:"Senior Data Engineer",duration:"Mar 2019 – Dec 2021",location:"Pune",projects:[
-        {name:"Data Warehouse Consolidation",duration:"Mar 2019 – Dec 2021",responsibilities:["Consolidated 3 legacy data warehouses","Reduced processing time by 60%"],skills:"SQL Server, ETL, Python"},
-      ]},
-    ],
-    education:[{degree:"Master of Technology in Data Science",institution:"IIT Bombay",year:"2018"}],
-    certifications:[{name:"Azure Data Engineer Associate",issuer:"Microsoft",expiry:"Mar 2027"},{name:"AWS Certified Data Analytics",issuer:"Amazon",expiry:"Sep 2026"}],
-    executive_summary:["8+ years in data engineering with full-stack BI capabilities","All required technical competencies at advanced/expert level","Led enterprise cloud migration with 60% performance improvement","Dual certified in Azure and AWS cloud platforms"],
-    core_competencies:[{domain:"Data Engineering",skills:"ETL, Data Modeling, Cloud Architecture",tools:"Python, Azure, AWS, SQL Server"}],
-    technical_competencies:{programming_languages:"Python, Scala, SQL",tools_technologies:"Power BI, Azure Data Factory, Databricks",platforms:"Azure, AWS"},
-  },
-  {
-    id:"3",name:"Rahul Verma",email:"rahul.v@email.com",phone:"+91 7654321098",location:"Delhi, India",
-    score:68,categories:{technical:62,experience:72,education:70,stability:75},
-    matched:["Python","SQL Server","Power BI"],missing:["ETL Pipelines","Azure","Data Modeling"],
-    highlights:["5 yrs BI experience","Strong SQL skills"],redFlags:["Missing must-have: ETL Pipelines"],
-    gaps:["Email not verified","Certification details incomplete","No cloud experience documented"],
-    catReasoning:{
-      technical:"Has Python and SQL Server (must-haves) and Power BI. Missing ETL Pipelines (must-have) leads to score cap. No cloud or data modeling experience documented.",
-      experience:"5 years in BI reporting. Relevant but limited to analyst-level work without engineering scope.",
-      education:"B.E. in IT from DTU — solid technical foundation.",
-      stability:"Stable tenure at TCS. No concerns."
-    },
-    reasoning:"Decent BI background but missing ETL Pipelines (must-have). Would need significant upskilling for this role. Technical score capped due to missing must-have skill.",
-    skillDetails:[
-      {skill:"Python",found:true,where:"Scripting",level:"Intermediate"},
-      {skill:"SQL Server",found:true,where:"Reports",level:"Advanced"},
-      {skill:"ETL Pipelines",found:false,where:"Not found",level:"—"},
-      {skill:"Power BI",found:true,where:"Dashboards",level:"Intermediate"},
-      {skill:"Azure",found:false,where:"Not found",level:"—"},
-      {skill:"Data Modeling",found:false,where:"Not found",level:"—"},
-    ],
-    employment:[{company:"TCS",role:"BI Analyst",duration:"Jun 2021 – Present",location:"Delhi",projects:[
-      {name:"Sales Reporting Platform",duration:"Jun 2021 – Present",responsibilities:["Created Power BI reports","Complex SQL queries for extraction"],skills:"Power BI, SQL Server, Python"},
-    ]}],
-    education:[{degree:"Bachelor of Engineering in IT",institution:"Delhi Technological University",year:"2020"}],
-    certifications:[{name:"Power BI Certification",issuer:"Microsoft",expiry:null}],
-    executive_summary:["5 years in BI with strong SQL","Power BI dashboard development"],
-    core_competencies:[{domain:"BI",skills:"Reporting, Dashboards",tools:"Power BI, SQL Server"}],
-    technical_competencies:{programming_languages:"Python, SQL",tools_technologies:"Power BI, SSRS",platforms:"Windows Server"},
-  },
-  {
-    id:"4",name:"Sneha Patel",email:"sneha.p@email.com",phone:null,location:"Hyderabad, India",
-    score:74,categories:{technical:75,experience:70,education:80,stability:68},
-    matched:["Python","SQL Server","ETL Pipelines","Azure"],missing:["Power BI","Data Modeling"],
-    highlights:["4 yrs cloud data eng","Azure certified"],redFlags:["Avg tenure < 2 yrs"],
-    gaps:["Phone number missing","Notice period not mentioned"],
-    catReasoning:{
-      technical:"Has 3/3 must-have skills plus Azure. Missing Power BI and Data Modeling but has all critical requirements.",
-      experience:"4 years cloud-focused data engineering. Good but limited progression.",
-      education:"M.Sc from BITS Pilani — strong academic profile.",
-      stability:"Short tenures across roles. 2 companies in 3 years raises mild concern."
-    },
-    reasoning:"Good technical foundation with all must-have skills. Missing Power BI and Data Modeling. Short tenures are a concern. Phone number missing — needs follow-up.",
-    skillDetails:[
-      {skill:"Python",found:true,where:"Pipeline scripts",level:"Advanced"},
-      {skill:"SQL Server",found:true,where:"DB management",level:"Intermediate"},
-      {skill:"ETL Pipelines",found:true,where:"Built with Airflow",level:"Advanced"},
-      {skill:"Power BI",found:false,where:"Not found",level:"—"},
-      {skill:"Azure",found:true,where:"Synapse & ADF",level:"Advanced"},
-      {skill:"Data Modeling",found:false,where:"Not found",level:"—"},
-    ],
-    employment:[
-      {company:"Deloitte",role:"Cloud Data Engineer",duration:"Apr 2023 – Present",location:"Hyderabad",projects:[
-        {name:"Azure Data Lake Implementation",duration:"Apr 2023 – Present",responsibilities:["Built ETL pipelines using ADF","Managed Azure Synapse"],skills:"Azure, Python, ETL"},
-      ]},
-      {company:"Accenture",role:"Data Engineer",duration:"Jul 2021 – Mar 2023",location:"Hyderabad",projects:[
-        {name:"Client Data Integration",duration:"Jul 2021 – Mar 2023",responsibilities:["Python-based extraction scripts","Managed SQL Server databases"],skills:"Python, SQL Server"},
-      ]},
-    ],
-    education:[{degree:"Master of Science in Computer Science",institution:"BITS Pilani",year:"2021"}],
-    certifications:[{name:"Azure Data Engineer Associate",issuer:"Microsoft",expiry:"Jun 2025"}],
-    executive_summary:["4 years cloud-native data engineering","Production ETL pipelines on Azure"],
-    core_competencies:[{domain:"Cloud Data Engineering",skills:"ETL, Data Lake",tools:"Azure, Python, Airflow"}],
-    technical_competencies:{programming_languages:"Python, SQL",tools_technologies:"Azure Data Factory, Synapse",platforms:"Azure"},
-  },
-  {
-    id:"5",name:"Vikram Singh",email:null,phone:"+91 9988776655",location:"Chennai, India",
-    score:45,categories:{technical:35,experience:55,education:60,stability:50},
-    matched:["Python"],missing:["SQL Server","ETL Pipelines","Power BI","Azure","Data Modeling"],
-    highlights:["3 yrs Python dev"],redFlags:["5 of 6 skills missing","No data engineering experience"],
-    gaps:["Email missing","No certifications listed","Education details incomplete","No data engineering projects"],
-    catReasoning:{
-      technical:"Only Python found. Missing all 3 must-have skills except Python. Score heavily penalized. No database, ETL, BI, or cloud skills.",
-      experience:"3 years in web development. No data engineering relevance.",
-      education:"B.Sc from Anna University. Adequate but not specialized.",
-      stability:"Single employer — stable but short tenure."
-    },
-    reasoning:"Python developer without data engineering background. Only 1 of 6 required skills. Not suitable for this role.",
-    skillDetails:[
-      {skill:"Python",found:true,where:"Web dev",level:"Advanced"},
-      {skill:"SQL Server",found:false,where:"Not found",level:"—"},
-      {skill:"ETL Pipelines",found:false,where:"Not found",level:"—"},
-      {skill:"Power BI",found:false,where:"Not found",level:"—"},
-      {skill:"Azure",found:false,where:"Not found",level:"—"},
-      {skill:"Data Modeling",found:false,where:"Not found",level:"—"},
-    ],
-    employment:[{company:"Zoho",role:"Python Developer",duration:"Jun 2022 – Present",location:"Chennai",projects:[
-      {name:"CRM Module Development",duration:"Jun 2022 – Present",responsibilities:["Built REST APIs using Django","Unit tests for backend"],skills:"Python, Django"},
-    ]}],
-    education:[{degree:"Bachelor of Science in Computer Science",institution:"Anna University",year:"2021"}],
-    certifications:[],
-    executive_summary:["3 years Python development in web apps"],
-    core_competencies:[{domain:"Web Dev",skills:"APIs, Backend",tools:"Python, Django"}],
-    technical_competencies:{programming_languages:"Python, JavaScript",tools_technologies:"Django, PostgreSQL",platforms:"Linux"},
-  },
-  {
-    id:"6",name:"Meera Krishnan",email:"meera.k@email.com",phone:"+91 8899776655",location:"Pune, India",
-    score:58,categories:{technical:50,experience:65,education:70,stability:55},
-    matched:["Python","SQL Server","Data Modeling"],missing:["ETL Pipelines","Power BI","Azure"],
-    highlights:["4 yrs data analyst","Strong SQL"],redFlags:["Missing must-have: ETL Pipelines"],
-    gaps:["Notice period not specified","No cloud certifications"],
-    catReasoning:{
-      technical:"Has Python, SQL Server (must-haves), and Data Modeling (bonus). Missing ETL Pipelines (must-have) caps the score. No cloud/BI experience.",
-      experience:"4 years as data analyst. Relevant SQL work but no engineering-scope projects.",
-      education:"B.Tech from Pune University — solid foundation.",
-      stability:"Single company — fine but only 2 years total experience documented."
-    },
-    reasoning:"Data analyst transitioning to engineering. Has SQL and Python but lacks ETL and cloud. Could be considered if willing to upskill.",
-    skillDetails:[
-      {skill:"Python",found:true,where:"Analysis scripts",level:"Intermediate"},
-      {skill:"SQL Server",found:true,where:"Primary tool",level:"Advanced"},
-      {skill:"ETL Pipelines",found:false,where:"Not found",level:"—"},
-      {skill:"Power BI",found:false,where:"Uses Tableau",level:"—"},
-      {skill:"Azure",found:false,where:"Not found",level:"—"},
-      {skill:"Data Modeling",found:true,where:"Dimensional models",level:"Intermediate"},
-    ],
-    employment:[{company:"Persistent Systems",role:"Data Analyst",duration:"Aug 2022 – Present",location:"Pune",projects:[
-      {name:"Customer Analytics Platform",duration:"Aug 2022 – Present",responsibilities:["Data models for customer segmentation","Automated reporting with Python","Complex SQL queries"],skills:"Python, SQL Server, Data Modeling"},
-    ]}],
-    education:[{degree:"Bachelor of Technology in Computer Engineering",institution:"Pune University",year:"2022"}],
-    certifications:[{name:"Tableau Desktop Specialist",issuer:"Tableau",expiry:"Mar 2026"}],
-    executive_summary:["4 years data analytics with strong SQL and modeling"],
-    core_competencies:[{domain:"Data Analytics",skills:"Data Modeling, SQL",tools:"Python, SQL Server, Tableau"}],
-    technical_competencies:{programming_languages:"Python, SQL, R",tools_technologies:"Tableau, SQL Server, Excel",platforms:"Windows"},
-  },
-];
+// Normalize a live job row into the shape the UI renders (chips + weights).
+function jobView(job) {
+  if (!job) return null;
+  // Real job_descriptions schema: must/good/bonus arrays + weight_* columns.
+  const weights = {
+    technical: job.weight_technical ?? DEFAULT_WEIGHTS.technical,
+    experience: job.weight_experience ?? DEFAULT_WEIGHTS.experience,
+    education: job.weight_education ?? DEFAULT_WEIGHTS.education,
+    soft_skills: job.weight_soft_skills ?? DEFAULT_WEIGHTS.soft_skills,
+    stability: job.weight_stability ?? DEFAULT_WEIGHTS.stability,
+  };
+  const mustHave = job.must_have_skills || [];
+  const goodToHave = job.good_to_have_skills || [];
+  const bonus = job.bonus_skills || [];
+  return {
+    title: job.title,
+    weights,
+    mustHave,
+    goodToHave,
+    bonus,
+    skills: [...mustHave, ...goodToHave, ...bonus],
+  };
+}
+
+// Mock candidate data removed — the results view is driven entirely by live
+// scored data from the backend (POST /api/v1/scoring/batch and
+// GET /api/v1/results?job_id=...). When nothing has been scored, the results
+// step renders an empty state instead of placeholder candidates.
 
 // ─── Helpers ─────────────────────────────────────────────────────
 const sColor = s => s >= 75 ? "#059669" : s >= 55 ? "#D97706" : "#DC2626";
@@ -538,11 +342,34 @@ export default function ScorCraft(){
 
   // ── Backend wiring ────────────────────────────────────────────
   const[demoMode,setDemoMode]=useState(true);          // until /health proves live
+  const[configured,setConfigured]=useState(true);      // /health configured flag — drives the demo banner
   const[jobs,setJobs]=useState([]);                    // live jobs (if any)
   const[activeJob,setActiveJob]=useState(null);        // selected live job
   const[uploadFileObjs,setUploadFileObjs]=useState([]);// real File objects for scoring
   const[busy,setBusy]=useState("");                    // small status message
   const resumeRef=useRef(null);                        // hidden resume file input
+
+  // ── Auth ──────────────────────────────────────────────────────
+  const router=useRouter();
+  // Require a Supabase session; bounce to /login if there's no token.
+  useEffect(()=>{
+    if(typeof window!=="undefined" && !api.getToken()){
+      router.replace("/login");
+    }
+  },[router]);
+  const signOut=useCallback(async()=>{
+    try{await supabase.auth.signOut();}catch{/* ignore */}
+    if(typeof window!=="undefined")window.localStorage.removeItem(TOKEN_KEY);
+    router.replace("/login");
+  },[router]);
+
+  // ── Create / edit / duplicate job flow (ported ScorQ JobCreator) ──
+  const[showCreateJob,setShowCreateJob]=useState(false);
+  const[editingJob,setEditingJob]=useState(null);     // job being edited
+  const[duplicatingJob,setDuplicatingJob]=useState(null); // job being duplicated
+  const[jobBusy,setJobBusy]=useState("");             // dashboard status message
+  // Job create/edit/duplicate/archive/delete handlers are defined below, after
+  // fallbackToDemo/loadJobResults/selectJob (they depend on those callbacks).
 
   const SAMPLE_FILES=[{name:"Assadullah_Buriro_Resume.pdf",size:"245 KB"},{name:"Priya_Sharma_CV.pdf",size:"312 KB"},{name:"Rahul_Verma_Resume.docx",size:"189 KB"},{name:"Sneha_Patel_CV.pdf",size:"267 KB"},{name:"Vikram_Singh_Resume.pdf",size:"198 KB"},{name:"Meera_Krishnan_CV.docx",size:"223 KB"}];
   const handleResumeFiles=(e)=>{
@@ -581,6 +408,7 @@ export default function ScorCraft(){
       try{
         const live=await api.isLive();
         if(cancelled)return;
+        setConfigured(live);
         setDemoMode(!live);
         if(live){
           const js=await api.listJobs();
@@ -603,12 +431,65 @@ export default function ScorCraft(){
     if(!demoMode&&job?.id)loadJobResults(job.id);
   },[demoMode,loadJobResults]);
 
+  // ── Job dashboard: reload + create/edit/duplicate/archive/delete ──
+  // Reload the live jobs list (refreshes candidate counts, versions, statuses).
+  const reloadJobs=useCallback(async()=>{
+    try{
+      const js=await api.listJobs();
+      setJobs(js);
+      return js;
+    }catch(e){fallbackToDemo(e);return [];}
+  },[fallbackToDemo]);
+
+  // Called by <JobCreator/> once a job is persisted (create, edit, or duplicate).
+  const handleJobCreated=useCallback(async(job)=>{
+    setShowCreateJob(false);setEditingJob(null);setDuplicatingJob(null);
+    if(!job)return;
+    const js=await reloadJobs();
+    // Re-resolve the saved job from the fresh list (edit may have created a new
+    // version with a different id); fall back to the returned row.
+    const fresh=(js||[]).find(j=>j.id===job.id)||job;
+    setActiveJob(fresh);
+    setSelected(new Set());
+    setCandidates([]);
+  },[reloadJobs]);
+
+  const handleEditJob=useCallback((job)=>{setDuplicatingJob(null);setEditingJob(job);},[]);
+  const handleDuplicateJob=useCallback((job)=>{setEditingJob(null);setDuplicatingJob(job);},[]);
+  const handleArchiveJob=useCallback(async(job)=>{
+    setJobBusy(`Archiving “${job.title}”…`);
+    try{await api.archiveJob(job.id);await reloadJobs();}
+    catch(e){fallbackToDemo(e);}
+    setJobBusy("");
+  },[reloadJobs,fallbackToDemo]);
+  const handleDeleteJob=useCallback(async(job)=>{
+    const scored=job.candidates_scored_count||0;
+    if(scored>0){
+      window.alert(`“${job.title}” has ${scored} scored candidate(s). Archive it instead of deleting to preserve those scores.`);
+      return;
+    }
+    if(!window.confirm(`Permanently delete “${job.title}”? This cannot be undone.`))return;
+    setJobBusy(`Deleting “${job.title}”…`);
+    try{
+      await api.deleteJob(job.id);
+      if(activeJob?.id===job.id){setActiveJob(null);setCandidates([]);}
+      await reloadJobs();
+    }catch(e){fallbackToDemo(e);}
+    setJobBusy("");
+  },[reloadJobs,fallbackToDemo,activeJob]);
+
   const jobIdForScoring=activeJob?.id||null;
-  const jobTitle=activeJob?.title||MOCK_JOB.title;
+  const jobTitle=activeJob?.title||"the selected job";
+  // Real job (normalized) for display; neutral fallback if none selected.
+  const activeView=activeJob?jobView(activeJob):null;
+  const jobForDisplay=activeView||EMPTY_JOB_VIEW;
 
   const runScoring=useCallback(async()=>{
     setStep("scoring");setScoringProgress(0);
-    // Live path: real files + a real job id + configured backend.
+    // Live path: real files + a real job id + configured backend. This is the
+    // only path that produces candidates — scored results come straight from
+    // the backend. There is no mock fallback; if scoring can't run or returns
+    // nothing, the results step shows its empty state.
     if(!demoMode&&jobIdForScoring&&uploadFileObjs.length){
       const iv=setInterval(()=>setScoringProgress(p=>Math.min(p+8,90)),400);
       try{
@@ -620,12 +501,13 @@ export default function ScorCraft(){
         return;
       }catch(e){
         clearInterval(iv);
-        fallbackToDemo(e);
-        // fall through to mock simulation below
+        fallbackToDemo(e); // drops to demo banner; results shows empty state
       }
     }
-    // Demo path: simulated progress + mock candidates.
-    let i=0;const iv=setInterval(()=>{i++;setScoringProgress(Math.min(i*18,100));if(i>=6){clearInterval(iv);setCandidates(MOCK_CANDIDATES.sort((a,b)=>b.score-a.score));setTimeout(()=>setStep("results"),400);}},500);
+    // No live scoring available (demo mode, no job, or no real files) — go to
+    // results with whatever has been scored (often nothing → empty state).
+    setScoringProgress(100);
+    setTimeout(()=>setStep("results"),400);
   },[demoMode,jobIdForScoring,uploadFileObjs,fallbackToDemo]);
 
   // ── Craft handlers ────────────────────────────────────────────
@@ -703,43 +585,50 @@ export default function ScorCraft(){
   const ci=steps.findIndex(s=>s.key===step);
 
   // ─── Job ───────────────────────────────────────────────────────
-  const renderJob=()=>(
-    <div style={S.container}><div style={S.card}>
-      <div style={S.h2}>Select or create a job</div>
-      <p style={{...S.sub,marginBottom:14}}>Configure the role and required skills</p>
-      {jobs.length>0&&(
-        <div style={{marginBottom:14}}>
-          <div style={S.label}>Live jobs (from backend)</div>
-          <select style={{...S.input,maxWidth:360}} value={activeJob?.id||""}
-            onChange={e=>selectJob(jobs.find(j=>j.id===e.target.value)||null)}>
-            {jobs.map(j=><option key={j.id} value={j.id}>{j.title}</option>)}
-          </select>
-          {!demoMode&&candidates.length>0&&(
-            <div style={{marginTop:10,display:"flex",alignItems:"center",gap:10}}>
-              <span style={{fontSize:12,color:"#6B7280"}}>{candidates.length} previously scored candidate{candidates.length>1?"s":""} for this job.</span>
-              <button style={{...S.btnO,padding:"5px 12px",fontSize:12}} onClick={()=>setStep("results")}>Review results →</button>
-            </div>
-          )}
+  const skillChips=(arr,bg,c)=>arr.length
+    ? arr.map(s=><span key={s} style={S.chip(bg,c)}>{s}</span>)
+    : <span style={{fontSize:11,color:"#9CA3AF"}}>None</span>;
+
+  const renderJob=()=>{
+    // Editing or duplicating an existing job → JobCreator pre-filled.
+    if(editingJob||duplicatingJob){
+      const j=editingJob||duplicatingJob;
+      return(
+        <div style={{padding:"20px"}}>
+          <JobCreator
+            job={j}
+            duplicate={!!duplicatingJob}
+            scoredCount={j.candidates_scored_count||0}
+            onCreated={handleJobCreated}
+            onCancel={()=>{setEditingJob(null);setDuplicatingJob(null);}}
+          />
         </div>
-      )}
-      <div style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:10,padding:14}}>
-        <div style={{display:"flex",justifyContent:"space-between",marginBottom:10}}>
-          <div><div style={{fontSize:15,fontWeight:700,color:NAVY}}>{jobTitle}</div><div style={S.sub}>Weights: Tech {MOCK_JOB.weights.technical}% · Exp {MOCK_JOB.weights.experience}% · Edu {MOCK_JOB.weights.education}% · Stability {MOCK_JOB.weights.stability}%</div></div>
-          <span style={S.chip("#EEF2FF",INDIGO)}>Active</span>
+      );
+    }
+    // "+ Create new job" → blank ScorQ creation flow.
+    if(showCreateJob){
+      return(
+        <div style={{padding:"20px"}}>
+          <JobCreator onCreated={handleJobCreated} onCancel={()=>setShowCreateJob(false)}/>
         </div>
-        <div style={S.label}>Must have</div><div style={{marginBottom:8}}>{MOCK_JOB.mustHave.map(s=><span key={s} style={S.chip("#FEE2E2","#991B1B")}>{s}</span>)}</div>
-        <div style={S.label}>Good to have</div><div style={{marginBottom:8}}>{MOCK_JOB.goodToHave.map(s=><span key={s} style={S.chip("#FEF3C7","#92400E")}>{s}</span>)}</div>
-        <div style={S.label}>Bonus</div><div>{MOCK_JOB.bonus.map(s=><span key={s} style={S.chip("#EEF2FF","#4338CA")}>{s}</span>)}</div>
+      );
+    }
+    // Default → job management dashboard (its own empty state when no jobs).
+    return(
+      <div style={{padding:"20px"}}>
+        <JobDashboard
+          jobs={jobs}
+          busy={jobBusy}
+          onSelect={(job)=>{selectJob(job);setStep("upload");}}
+          onCreate={()=>setShowCreateJob(true)}
+          onEdit={handleEditJob}
+          onDuplicate={handleDuplicateJob}
+          onArchive={handleArchiveJob}
+          onDelete={handleDeleteJob}
+        />
       </div>
-      <div style={{marginTop:14,display:"flex",gap:10}}><button style={S.btn} onClick={()=>setStep("upload")}>Use this job →</button><button style={S.btnO} onClick={async()=>{
-        if(demoMode){alert("Creating jobs needs a live backend.\nAdd credentials to backend/.env (and a Supabase auth token) to create real jobs.");return;}
-        const title=prompt("New job title:");
-        if(!title)return;
-        try{const job=await api.createJob({title});setJobs(p=>[job,...p]);setActiveJob(job);}
-        catch(e){fallbackToDemo(e);alert("Could not create job: "+(e?.message||e));}
-      }}>+ Create new job</button></div>
-    </div></div>
-  );
+    );
+  };
 
   // ─── Upload ────────────────────────────────────────────────────
   const renderUpload=()=>(
@@ -771,7 +660,19 @@ export default function ScorCraft(){
   );
 
   // ─── Results ───────────────────────────────────────────────────
-  const renderResults=()=>(
+  const renderResults=()=>{
+    // Empty state — nothing has been scored for this job yet.
+    if(!candidates.length) return(
+      <div style={S.container}>
+        <div style={{...S.card,textAlign:"center",padding:"48px 24px"}}>
+          <div style={{fontSize:32,marginBottom:10}}>📭</div>
+          <div style={S.h2}>No candidates scored yet</div>
+          <p style={{...S.sub,marginBottom:18}}>Upload resumes to begin.</p>
+          <button style={S.btn} onClick={()=>setStep("upload")}>Upload resumes →</button>
+        </div>
+      </div>
+    );
+    return(
     <div style={S.container}>
       {/* Stats */}
       <div style={{display:"flex",gap:10,marginBottom:10}}>
@@ -852,11 +753,12 @@ export default function ScorCraft(){
 
       {/* Rows */}
       {filtered.map(c=>(
-        <CandidateRow key={c.id} c={c} job={MOCK_JOB} cutoff={cutoff} selected={selected.has(c.id)} masked={maskPI} logoUrl={logoUrl}
+        <CandidateRow key={c.id} c={c} job={jobForDisplay} cutoff={cutoff} selected={selected.has(c.id)} masked={maskPI} logoUrl={logoUrl}
           onToggle={()=>toggleSelect(c.id)} onCraft={()=>{setCraftQueue([c]);setStep("craft");}} onViewScorecard={()=>setViewScorecard(c)} onDownload={()=>setDownloadModal(c)}/>
       ))}
     </div>
-  );
+    );
+  };
 
   // ─── Craft ─────────────────────────────────────────────────────
   const renderCraft=()=>(
@@ -954,7 +856,16 @@ export default function ScorCraft(){
             {/* Live preview */}
             <div style={{padding:18,overflowY:"auto",background:"#F3F4F6",maxHeight:"70vh"}}>
               <div style={{fontSize:11,fontWeight:700,color:"#6B7280",marginBottom:8}}>Live preview</div>
-              <ResumePreview c={c} masked={maskPI} letterhead={letterhead} logoUrl={logoUrl}/>
+              {/* Masking only removes email + phone — everything else stays visible.
+                  Guard: if the resume has no crafted content yet (structured_data
+                  empty, e.g. craft failed), show a hint instead of a blank card. */}
+              {(c.executive_summary?.length || c.employment?.length || c.core_competencies?.length) ? (
+                <ResumePreview c={c} masked={maskPI} letterhead={letterhead} logoUrl={logoUrl}/>
+              ) : (
+                <div style={{padding:"28px 18px",textAlign:"center",color:"#9CA3AF",fontSize:12,background:"#fff",border:"1px dashed #D1D5DB",borderRadius:8}}>
+                  No crafted content yet — craft this resume to see the formatted preview.
+                </div>
+              )}
             </div>
           </div>
           <div style={{padding:"12px 20px",borderTop:"1px solid #E5E7EB",display:"flex",gap:8}}>
@@ -977,7 +888,7 @@ export default function ScorCraft(){
             <span style={{fontSize:14,fontWeight:700,color:NAVY}}>Scorecard: {viewScorecard.name}</span>
             <button style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#9CA3AF"}} onClick={()=>setViewScorecard(null)}>✕</button>
           </div>
-          <div style={{padding:20,overflowY:"auto",flex:1,maxHeight:"78vh"}}><Scorecard c={viewScorecard} job={MOCK_JOB} logoUrl={logoUrl}/></div>
+          <div style={{padding:20,overflowY:"auto",flex:1,maxHeight:"78vh"}}><Scorecard c={viewScorecard} job={jobForDisplay} logoUrl={logoUrl}/></div>
         </div>
       </div>
     );
@@ -1028,10 +939,13 @@ export default function ScorCraft(){
           <span style={{fontSize:19,fontWeight:800,color:"#fff"}}>Scor</span><span style={{fontSize:19,fontWeight:800,color:GOLD}}>Craft</span>
           <span style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginLeft:8}}>by HYROI Solutions</span>
         </div>
-        <div style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>Powered by OpenAI GPT-4o</div>
+        <div style={{display:"flex",alignItems:"center",gap:14}}>
+          <span style={{fontSize:10,color:"rgba(255,255,255,0.35)"}}>Powered by OpenAI GPT-4o</span>
+          <button onClick={signOut} style={{fontSize:11,fontWeight:600,color:"#fff",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,padding:"4px 10px",cursor:"pointer"}}>Sign out</button>
+        </div>
       </header>
       <div style={S.stepBar}>{steps.map((s,i)=><div key={s.key} style={S.stepItem(step===s.key,i<ci)} onClick={()=>i<ci?setStep(s.key):null}>{i<ci?"✓ ":""}{s.label}</div>)}</div>
-      {demoMode&&(
+      {!configured&&(
         <div style={{background:"#FFFBEB",borderBottom:"1px solid #FDE68A",padding:"7px 24px",fontSize:12,color:"#92400E",display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontWeight:700}}>Demo mode</span>
           <span>Running on sample data — add credentials to <code style={{background:"#FEF3C7",padding:"1px 5px",borderRadius:4}}>backend/.env</code> (Supabase + OpenAI) and a Supabase auth token to enable live scoring &amp; crafting.</span>
