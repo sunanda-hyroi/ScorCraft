@@ -225,14 +225,69 @@ async def update_job(
     payload: dict = Body(...),
     authorization: Optional[str] = Header(None)
 ):
+    """Update a job — with versioning (Feature 3).
+
+    If the job has scored candidates AND the versioning columns exist, the
+    original row is preserved and ARCHIVED, and a new row is inserted as the next
+    version (version+1, parent_job_id = lineage root). Otherwise the job is
+    updated in place. This keeps working before the docs/add_job_versioning.sql
+    migration is applied (it just can't version until the columns exist).
+    """
     _get_user(authorization)
     try:
+        cur = supabase.table("job_descriptions").select("*").eq("id", job_id).execute()
+        if not cur.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        original = cur.data[0]
+
+        cols = _job_columns()
+        versioning_available = "version" in cols and "parent_job_id" in cols
+        scored = _candidate_counts().get(job_id, original.get("candidates_scored_count") or 0)
+
         row = _build_job_row(payload, user_id=None)  # don't reassign ownership
+
+        if scored > 0 and versioning_available:
+            # Lineage root = the original's parent, or the original itself.
+            root = original.get("parent_job_id") or original["id"]
+            lineage = supabase.table("job_descriptions")\
+                .select("id,version,parent_job_id")\
+                .or_(f"id.eq.{root},parent_job_id.eq.{root}")\
+                .execute().data or []
+            next_version = max(
+                [(r.get("version") or 1) for r in lineage] + [original.get("version") or 1]
+            ) + 1
+
+            new_row = dict(row)
+            new_row["version"] = next_version
+            new_row["parent_job_id"] = root
+            new_row["status"] = "active"
+            if "candidates_scored_count" in cols:
+                new_row["candidates_scored_count"] = 0  # fresh version, not yet scored
+            if original.get("user_id"):
+                new_row["user_id"] = original["user_id"]
+            new_row = {k: v for k, v in new_row.items() if k in cols}
+
+            created = supabase.table("job_descriptions").insert(new_row).execute()
+            # Archive the original so only the latest version is "active".
+            supabase.table("job_descriptions")\
+                .update({"status": "archived"})\
+                .eq("id", job_id)\
+                .execute()
+            return {
+                "job": created.data[0],
+                "versioned": True,
+                "previous_version_id": job_id,
+                "version": next_version,
+            }
+
+        # No scores (or pre-migration) → safe to update in place.
         res = supabase.table("job_descriptions")\
             .update(row)\
             .eq("id", job_id)\
             .execute()
-        return {"job": res.data[0]}
+        return {"job": res.data[0], "versioned": False}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

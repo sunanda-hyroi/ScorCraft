@@ -194,6 +194,16 @@ async def score_batch(files: List[UploadFile] = File(...), job_id: str = Form(..
             }).eq("id", session_id).execute()
         except Exception:
             pass
+    # Best-effort: bump the job's denormalized candidates_scored_count (Feature 3).
+    # No-op before the versioning migration adds the column (caught below).
+    if results:
+        try:
+            cur = supabase.table("job_descriptions").select("candidates_scored_count").eq("id", job_id).execute()
+            if cur.data:
+                cnt = (cur.data[0].get("candidates_scored_count") or 0) + len(results)
+                supabase.table("job_descriptions").update({"candidates_scored_count": cnt}).eq("id", job_id).execute()
+        except Exception:
+            pass
     return {"session_id": session_id, "total": len(files), "scored": len(results), "failed": len(errors), "results": results, "errors": errors}
 
 

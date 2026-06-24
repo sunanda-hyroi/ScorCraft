@@ -196,6 +196,25 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
         </div>
       )}
 
+      {/* Existing version lineage (read-only) when editing a versioned job. */}
+      {isEdit && (job.version > 1 || job.previous_versions?.length > 0) && (
+        <div className="bg-gray-50 border border-gray-200 px-4 py-3 rounded-lg mb-5 text-sm">
+          <div className="font-semibold text-[#1A2744] mb-1">
+            Editing version {job.version || 1}
+          </div>
+          {job.previous_versions?.length > 0 && (
+            <div className="text-xs text-gray-500">
+              Previous versions:{" "}
+              {job.previous_versions
+                .slice()
+                .sort((a, b) => b.version - a.version)
+                .map((v) => `v${v.version}${v.status === "archived" ? " (archived)" : ""}`)
+                .join(", ")}
+            </div>
+          )}
+        </div>
+      )}
+
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg mb-5 text-sm">
           {error}
