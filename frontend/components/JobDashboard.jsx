@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 // Job Management Dashboard (Feature 2). Renders all jobs as a searchable,
 // filterable, sortable card grid. Click a card to select it and advance to the
@@ -43,12 +43,34 @@ function fmtDate(iso) {
   }
 }
 
-export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDuplicate, onArchive, onDelete, busy }) {
+export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDuplicate, onArchive, onDelete, busy, currentUserName = "" }) {
+  const ALL_USERS = "All users";
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("All");
   const [sort, setSort] = useState("newest");
+  const [creator, setCreator] = useState(ALL_USERS);
   const [page, setPage] = useState(1);
   const [menuFor, setMenuFor] = useState(null); // job id whose kebab menu is open
+
+  // Unique creator names present on the jobs (for the "Created by" dropdown).
+  const creators = useMemo(() => {
+    const set = new Set();
+    for (const j of jobs) {
+      const n = (j.created_by_name || "").trim();
+      if (n) set.add(n);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [jobs]);
+
+  // Auto-select the logged-in user once (so they see their own jobs first),
+  // but only if they actually have jobs; otherwise leave it on "All users".
+  // A ref ensures we never override a manual change the recruiter makes later.
+  const autoDefaulted = useRef(false);
+  useEffect(() => {
+    if (autoDefaulted.current || !currentUserName || creators.length === 0) return;
+    autoDefaulted.current = true;
+    if (creators.includes(currentUserName)) setCreator(currentUserName);
+  }, [currentUserName, creators]);
 
   const counts = useMemo(() => {
     const c = { All: jobs.length, Active: 0, Draft: 0, Archived: 0 };
@@ -65,6 +87,7 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
     const q = query.trim().toLowerCase();
     let list = jobs.filter((j) => {
       if (tab !== "All" && statusOf(j) !== tab.toLowerCase()) return false;
+      if (creator !== ALL_USERS && (j.created_by_name || "") !== creator) return false;
       if (!q) return true;
       return (
         (j.title || "").toLowerCase().includes(q) ||
@@ -78,7 +101,7 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
       return (b.created_at || "").localeCompare(a.created_at || "");
     });
     return list;
-  }, [jobs, query, tab, sort]);
+  }, [jobs, query, tab, sort, creator]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -111,7 +134,7 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
         </button>
       </div>
 
-      {/* Controls: search + sort */}
+      {/* Controls: search + created-by + sort */}
       <div className="flex flex-wrap items-center gap-3 mb-4">
         <input
           value={query}
@@ -119,6 +142,17 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
           placeholder="🔍 Search by title or company…"
           className="flex-1 min-w-[220px] border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#1A2744]"
         />
+        <select
+          value={creators.includes(creator) || creator === ALL_USERS ? creator : ALL_USERS}
+          onChange={(e) => { setCreator(e.target.value); setPage(1); }}
+          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#1A2744] bg-white"
+          aria-label="Filter by creator"
+        >
+          <option value={ALL_USERS}>Created by: {ALL_USERS}</option>
+          {creators.map((n) => (
+            <option key={n} value={n}>Created by: {n}{n === currentUserName ? " (me)" : ""}</option>
+          ))}
+        </select>
         <select
           value={sort}
           onChange={(e) => setSort(e.target.value)}
@@ -193,9 +227,13 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
                   </div>
                 </div>
 
-                {/* Title + company */}
+                {/* Title + company + creator attribution */}
                 <div className="font-semibold text-[#1A2744] leading-snug mb-0.5">{job.title || "Untitled job"}</div>
-                <div className="text-xs text-gray-500 mb-3">{job.company || "No company"}</div>
+                <div className="text-xs text-gray-500">{job.company || "No company"}</div>
+                {job.created_by_name && (
+                  <div className="text-[11px] text-gray-400 mb-3">Created by: {job.created_by_name}</div>
+                )}
+                {!job.created_by_name && <div className="mb-3" />}
 
                 {/* Meta row */}
                 <div className="mt-auto flex items-center justify-between text-xs text-gray-500 pt-3 border-t border-gray-100">

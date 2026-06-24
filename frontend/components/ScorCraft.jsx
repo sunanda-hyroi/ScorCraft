@@ -29,6 +29,23 @@ const DEFAULT_WEIGHTS = { technical: 40, experience: 25, education: 15, soft_ski
 // selected (no mock job — real jobs come from GET /api/v1/jobs).
 const EMPTY_JOB_VIEW = { title: "Job", weights: DEFAULT_WEIGHTS, mustHave: [], goodToHave: [], bonus: [], skills: [] };
 
+// Derive a readable current-user name from the Supabase JWT (user_metadata
+// name, else the email local-part) — mirrors the backend _display_name so the
+// dashboard can auto-select the logged-in user in the "Created by" filter.
+function displayNameFromToken(token) {
+  try {
+    if (!token) return "";
+    const payload = JSON.parse(atob(token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const meta = payload.user_metadata || {};
+    const nm = meta.name || meta.full_name || meta.display_name;
+    if (nm && String(nm).trim()) return String(nm).trim();
+    const email = payload.email || "";
+    return email ? email.split("@")[0] : "";
+  } catch {
+    return "";
+  }
+}
+
 // ─── Action items (Feature 1) ────────────────────────────────────
 // Build the recruiter's INTERNAL action-item checklist for a candidate. The SET
 // of items is stable (driven by the craft-time missing_report + the score's
@@ -389,11 +406,14 @@ export default function ScorCraft(){
 
   // ── Auth ──────────────────────────────────────────────────────
   const router=useRouter();
-  // Require a Supabase session; bounce to /login if there's no token.
+  const[currentUserName,setCurrentUserName]=useState(""); // logged-in user's display name
+  // Require a Supabase session; bounce to /login if there's no token. Also
+  // derive the current user's display name (for the dashboard "Created by" filter).
   useEffect(()=>{
-    if(typeof window!=="undefined" && !api.getToken()){
-      router.replace("/login");
-    }
+    if(typeof window==="undefined")return;
+    const tok=api.getToken();
+    if(!tok){router.replace("/login");return;}
+    setCurrentUserName(displayNameFromToken(tok));
   },[router]);
   const signOut=useCallback(async()=>{
     try{await supabase.auth.signOut();}catch{/* ignore */}
@@ -657,6 +677,7 @@ export default function ScorCraft(){
         <JobDashboard
           jobs={jobs}
           busy={jobBusy}
+          currentUserName={currentUserName}
           onSelect={(job)=>{selectJob(job);setStep("upload");}}
           onCreate={()=>setShowCreateJob(true)}
           onEdit={handleEditJob}

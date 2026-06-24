@@ -147,6 +147,7 @@ export interface Job {
   scoring_weights?: Record<string, number>;
   shortlist_threshold?: number;
   created_at?: string;
+  created_by_name?: string | null;
   // Feature 2/3 annotations from GET /api/v1/jobs
   candidates_scored_count?: number;
   version?: number;
@@ -222,9 +223,10 @@ export type DownloadKind =
 
 // ── Endpoint wrappers ────────────────────────────────────────────
 
-/** JobSelector → GET /api/v1/jobs */
-export async function listJobs(): Promise<Job[]> {
-  const data = await request<{ jobs: Job[] }>("/api/v1/jobs");
+/** JobSelector → GET /api/v1/jobs (optionally filter by creator name). */
+export async function listJobs(createdBy?: string): Promise<Job[]> {
+  const qs = createdBy ? `?created_by=${encodeURIComponent(createdBy)}` : "";
+  const data = await request<{ jobs: Job[] }>(`/api/v1/jobs${qs}`);
   return data.jobs || [];
 }
 

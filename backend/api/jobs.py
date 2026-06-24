@@ -11,16 +11,32 @@ from config import settings
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 
-def _get_user(authorization: Optional[str]) -> str:
-    """Extract user id from bearer token."""
+def _get_auth_user(authorization: Optional[str]):
+    """Resolve the Supabase auth user from the bearer token (raises 401)."""
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated")
     token = authorization.replace("Bearer ", "")
     try:
-        user = supabase.auth.get_user(token)
-        return user.user.id
+        return supabase.auth.get_user(token).user
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid token")
+
+
+def _get_user(authorization: Optional[str]) -> str:
+    """Extract user id from bearer token."""
+    return _get_auth_user(authorization).id
+
+
+def _display_name(user) -> str:
+    """Human-readable creator name: a name from user_metadata, else the email
+    local-part (e.g. test@hyroi.com → 'test')."""
+    meta = getattr(user, "user_metadata", None) or {}
+    for k in ("name", "full_name", "display_name"):
+        v = meta.get(k)
+        if v and str(v).strip():
+            return str(v).strip()
+    email = getattr(user, "email", "") or ""
+    return email.split("@")[0] if email else "Unknown"
 
 
 # Columns that always exist on the current job_descriptions table. Used as a
@@ -144,11 +160,17 @@ def _candidate_counts() -> dict:
 
 
 @router.get("")
-async def list_jobs(authorization: Optional[str] = Header(None)):
+async def list_jobs(
+    created_by: Optional[str] = None,
+    authorization: Optional[str] = Header(None),
+):
     """All jobs (any status) for the job dashboard, newest first, each annotated
     with a live candidates_scored_count. The frontend handles status filtering,
     search and sort. Version lineage (previous_versions) is added when the
-    version/parent_job_id columns exist (see Feature 3 migration)."""
+    version/parent_job_id columns exist (see Feature 3 migration).
+
+    Optional ?created_by=<name> filters to jobs created by that person
+    (case-insensitive match on created_by_name)."""
     _get_user(authorization)
     try:
         res = supabase.table("job_descriptions")\
@@ -156,6 +178,9 @@ async def list_jobs(authorization: Optional[str] = Header(None)):
             .order("created_at", desc=True)\
             .execute()
         jobs = res.data or []
+        if created_by:
+            needle = created_by.strip().lower()
+            jobs = [j for j in jobs if (j.get("created_by_name") or "").lower() == needle]
         counts = _candidate_counts()
 
         # Group by version lineage: root = parent_job_id or the job's own id.
@@ -186,11 +211,14 @@ async def create_job(
     payload: dict = Body(...),
     authorization: Optional[str] = Header(None)
 ):
-    user_id = _get_user(authorization)
+    user = _get_auth_user(authorization)
     if not (payload.get("title") or "").strip():
         raise HTTPException(status_code=422, detail="Job title is required")
     try:
-        row = _build_job_row(payload, user_id)
+        row = _build_job_row(payload, user.id)
+        # Attribution — store a readable creator name (no-op pre-migration).
+        if "created_by_name" in _job_columns():
+            row["created_by_name"] = _display_name(user)
         res = supabase.table("job_descriptions").insert(row).execute()
         return {"job": res.data[0]}
     except HTTPException:
@@ -268,6 +296,9 @@ async def update_job(
                 new_row["candidates_scored_count"] = 0  # fresh version, not yet scored
             if original.get("user_id"):
                 new_row["user_id"] = original["user_id"]
+            # Keep the original creator's attribution across versions.
+            if "created_by_name" in cols and original.get("created_by_name"):
+                new_row["created_by_name"] = original["created_by_name"]
             new_row = {k: v for k, v in new_row.items() if k in cols}
 
             created = supabase.table("job_descriptions").insert(new_row).execute()
