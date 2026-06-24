@@ -249,12 +249,15 @@ async def update_job(
         if scored > 0 and versioning_available:
             # Lineage root = the original's parent, or the original itself.
             root = original.get("parent_job_id") or original["id"]
-            lineage = supabase.table("job_descriptions")\
-                .select("id,version,parent_job_id")\
-                .or_(f"id.eq.{root},parent_job_id.eq.{root}")\
-                .execute().data or []
+            # Max version across the lineage (root + all its child versions).
+            # Two simple queries — this supabase-py build has no .or_() helper.
+            siblings = supabase.table("job_descriptions")\
+                .select("version").eq("parent_job_id", root).execute().data or []
+            root_row = supabase.table("job_descriptions")\
+                .select("version").eq("id", root).execute().data or []
             next_version = max(
-                [(r.get("version") or 1) for r in lineage] + [original.get("version") or 1]
+                [(r.get("version") or 1) for r in (siblings + root_row)]
+                + [original.get("version") or 1]
             ) + 1
 
             new_row = dict(row)
