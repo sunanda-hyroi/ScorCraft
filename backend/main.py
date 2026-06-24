@@ -20,11 +20,19 @@ app = FastAPI(
 )
 
 # CORS — explicit allow-list (works with credentials, unlike "*"). Local dev +
-# the production Vercel origin (FRONTEND_URL, set after the frontend deploys),
-# plus a regex for Codespaces forwarded ports and Vercel preview deployments.
-_allowed_origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
+# the production Vercel origins, plus FRONTEND_URL (overridable via env) and a
+# regex covering Codespaces forwarded ports and every Vercel preview deployment.
+_allowed_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "https://recruitcraft.vercel.app",
+    "https://recruitcraft-sunanda-hyrois-projects.vercel.app",
+]
 if settings.FRONTEND_URL:
     _allowed_origins.append(settings.FRONTEND_URL.rstrip("/"))
+# De-dupe while preserving order (FRONTEND_URL may repeat one of the above).
+_allowed_origins = list(dict.fromkeys(_allowed_origins))
 
 app.add_middleware(
     CORSMiddleware,
