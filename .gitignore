@@ -17,3 +17,5 @@ frontend/tsconfig.tsbuildinfo
 # Build artifacts / source drops (prototype now lives in frontend/components)
 scorcraft-backend-v1.zip
 scorcraft-v3.jsx
+scorq-main.zip
+*.zip
