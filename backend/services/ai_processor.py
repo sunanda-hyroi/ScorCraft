@@ -211,6 +211,8 @@ def generate_missing_report(data: dict) -> dict:
             missing.append("Notice period not mentioned — ask candidate")
         if not info.get("current_location"):
             missing.append("Current location not specified — ask candidate")
+        if not info.get("linkedin"):
+            missing.append("LinkedIn profile missing — ask candidate")
 
     summary = data.get("executive_summary", [])
     if not summary:

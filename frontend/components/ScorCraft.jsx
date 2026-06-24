@@ -29,6 +29,44 @@ const DEFAULT_WEIGHTS = { technical: 40, experience: 25, education: 15, soft_ski
 // selected (no mock job — real jobs come from GET /api/v1/jobs).
 const EMPTY_JOB_VIEW = { title: "Job", weights: DEFAULT_WEIGHTS, mustHave: [], goodToHave: [], bonus: [], skills: [] };
 
+// ─── Action items (Feature 1) ────────────────────────────────────
+// Build the recruiter's INTERNAL action-item checklist for a candidate. The SET
+// of items is stable (driven by the craft-time missing_report + the score's
+// missing must-have skills); resolution is computed live against the candidate's
+// current editor state. `auto` semantics:
+//   true      → auto-resolved (field now filled) → auto-ticked + grayed, locked
+//   false     → field still empty → recruiter can tick manually if they prefer
+//   undefined → manual-only (not editable here, e.g. notice period / LinkedIn)
+// NOTE: action items are internal only — they live in editor state, never in
+// structured_data, and are never written to any downloaded document.
+function buildActionItems(c, mustHave = []) {
+  const mr = c.missingReport || {};
+  const flagged = [...(mr.missing_sections || []), ...(mr.warnings || [])];
+  const txt = (v) => !!(v && String(v).trim());
+  const items = [];
+  // Every flagged issue becomes an item; ones tied to an editable field get an
+  // `auto` predicate so filling the field auto-resolves them (the rest are
+  // manual — e.g. notice period / LinkedIn aren't editable in this form).
+  flagged.forEach((label, idx) => {
+    let auto; // undefined = manual checkbox
+    if (/email/i.test(label)) auto = txt(c.email);
+    else if (/phone/i.test(label)) auto = txt(c.phone);
+    else if (/location/i.test(label)) auto = txt(c.location);
+    else if (/education/i.test(label)) auto = (c.education?.length || 0) > 0;
+    else if (/summary/i.test(label)) auto = (c.executive_summary?.length || 0) >= 5;
+    else if (/expiry/i.test(label)) {
+      const certs = c.certifications || [];
+      auto = certs.length > 0 && certs.every((ct) => txt(ct.expiry));
+    }
+    items.push({ id: "mr-" + idx, label: label.replace(/\s*—\s*ask candidate\s*$/i, ""), auto });
+  });
+  // Missing must-have skills from the score (manual acknowledgement).
+  const mh = (mustHave || []).map((m) => String(m).toLowerCase());
+  (c.missing || []).filter((s) => mh.includes(String(s).toLowerCase()))
+    .forEach((s) => items.push({ id: "skill-" + s, label: `Missing must-have skill: ${s}` }));
+  return items;
+}
+
 // Normalize a live job row into the shape the UI renders (chips + weights).
 function jobView(job) {
   if (!job) return null;
@@ -851,6 +889,37 @@ export default function ScorCraft(){
                   <input style={S.input} placeholder="Expiry date" value={cert.expiry||""} onChange={e=>u(n=>{n.certifications[i].expiry=e.target.value})}/>
                 </div>
               ))}
+
+              {/* ── Action Items (internal only — never in downloads) ── */}
+              {(()=>{
+                const items=buildActionItems(c, jobForDisplay.mustHave||[]);
+                if(items.length===0) return null;
+                const checks=c._actionChecks||{};
+                const done=it=>!!(it.auto||checks[it.id]);
+                const remaining=items.filter(it=>!done(it)).length;
+                return(
+                  <div style={{marginTop:18,background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:8,padding:12}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:8,flexWrap:"wrap",gap:6}}>
+                      <div style={{fontSize:12,fontWeight:700,color:"#92400E"}}>Action Items ({remaining} remaining)</div>
+                      <span style={{fontSize:9,color:"#D97706",background:"#FEF3C7",padding:"2px 7px",borderRadius:10}}>Internal — not included in downloads</span>
+                    </div>
+                    {items.map(it=>{
+                      const isDone=done(it);
+                      const locked=it.auto===true; // auto-resolved → checkbox locked
+                      return(
+                        <label key={it.id} style={{display:"flex",alignItems:"flex-start",gap:7,marginBottom:5,cursor:locked?"default":"pointer",opacity:isDone?0.5:1}}>
+                          <input type="checkbox" checked={isDone} disabled={locked} style={{marginTop:2}}
+                            onChange={e=>u(n=>{n._actionChecks={...(n._actionChecks||{}),[it.id]:e.target.checked};})}/>
+                          <span style={{fontSize:11,color:"#374151",textDecoration:isDone?"line-through":"none"}}>
+                            {it.label}
+                            {it.auto===false&&<span style={{color:"#9CA3AF"}}> · fill the field above to auto-resolve</span>}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* Live preview */}
