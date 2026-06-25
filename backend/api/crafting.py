@@ -2,6 +2,7 @@
 Crafting endpoints — format scored resumes into polished documents.
 Only candidates who passed scoring can be crafted.
 """
+import logging
 import uuid
 from fastapi import APIRouter, HTTPException, Header, Body
 from typing import Optional, List
@@ -14,6 +15,7 @@ from config import settings
 
 
 router = APIRouter(prefix="/api/v1/craft", tags=["crafting"])
+logger = logging.getLogger("scorcraft.craft")
 
 
 # ── Request / Response models ────────────────────────────────
@@ -142,10 +144,19 @@ async def _craft_single(score_id: str, craft_settings: CraftSettings) -> dict:
         supabase.storage.from_(settings.FORMATTED_BUCKET).upload(
             formatted_filename,
             docx_content,
-            {"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+            {
+                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "upsert": "true",
+            },
         )
-    except Exception:
-        pass  # Storage upload is best-effort
+    except Exception as e:
+        # Best-effort: download regenerates from structured_data if this fails,
+        # but log it so a misconfigured bucket / RLS policy is diagnosable
+        # instead of silently swallowed.
+        logger.warning(
+            "Formatted DOCX upload to bucket '%s' failed for %s: %s",
+            settings.FORMATTED_BUCKET, formatted_filename, e,
+        )
 
     # 7. Save craft record to DB
     craft_record = {
@@ -246,7 +257,7 @@ async def update_crafted_resume(
     )
 
     # Re-upload formatted file
-    formatted_filename = craft.get("formatted_file_path", f"{craft_id}_crafted.docx")
+    formatted_filename = craft.get("formatted_file_path") or f"{craft_id}_crafted.docx"
     try:
         supabase.storage.from_(settings.FORMATTED_BUCKET).remove([formatted_filename])
     except Exception:
@@ -254,10 +265,16 @@ async def update_crafted_resume(
     try:
         supabase.storage.from_(settings.FORMATTED_BUCKET).upload(
             formatted_filename, docx_content,
-            {"content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+            {
+                "content-type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "upsert": "true",
+            },
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(
+            "Formatted DOCX re-upload to bucket '%s' failed for %s: %s",
+            settings.FORMATTED_BUCKET, formatted_filename, e,
+        )
 
     # Regenerate missing report
     missing_report = generate_missing_report(updated_data)

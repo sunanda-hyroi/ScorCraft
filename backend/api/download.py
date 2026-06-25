@@ -8,6 +8,7 @@ Options:
 Action items are NEVER included in downloads — they're internal-only.
 """
 import logging
+import traceback
 
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import Response
@@ -19,6 +20,7 @@ from services.pdf_generator import (
     generate_scorecard_pdf,
     generate_combined_pdf,
 )
+from services.docx_generator import create_corporate_resume
 from config import settings
 
 
@@ -68,60 +70,71 @@ async def download_docx(
     craft_id: str,
     authorization: Optional[str] = Header(None),
 ):
-    """Download crafted resume as DOCX."""
-    _get_user(authorization)
+    """Download crafted resume as DOCX.
 
-    # 1. The crafted_resumes record must exist.
+    Tries the pre-generated file in Supabase storage first; if that file is
+    missing (e.g. the best-effort upload during crafting failed in prod), the
+    DOCX is regenerated on-the-fly from the structured_data stored in the DB so
+    the download never depends on a successful prior upload.
+    """
     try:
+        _get_user(authorization)
+
+        # 1. The crafted_resumes record must exist.
         craft_res = supabase.table("crafted_resumes").select("*").eq("id", craft_id).execute()
+        if not craft_res.data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Crafted resume '{craft_id}' not found. Craft it before downloading.",
+            )
+
+        craft = craft_res.data[0]
+        structured_data = craft.get("structured_data") or {}
+        craft_settings = craft.get("craft_settings") or {}
+        file_path = craft.get("formatted_file_path")
+
+        # 2. Prefer the pre-generated file from storage.
+        content = None
+        if file_path:
+            try:
+                content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(file_path)
+            except Exception as e:
+                logger.warning(
+                    "Stored DOCX '%s' unavailable in bucket '%s' (%s) — regenerating on-the-fly",
+                    file_path, settings.FORMATTED_BUCKET, e,
+                )
+
+        # 3. Fallback: regenerate the DOCX from structured_data.
+        if not content:
+            if not structured_data:
+                raise HTTPException(
+                    status_code=404,
+                    detail="No formatted file in storage and no structured_data to regenerate from.",
+                )
+            content = create_corporate_resume(
+                structured_data,
+                company_name=craft_settings.get("company_name", "HYROI Solutions"),
+                mask_contacts=craft_settings.get("mask_pi", False),
+            )
+
+        # 4. Build a safe filename (structured_data may be null/missing).
+        candidate_info = structured_data.get("candidate_info") or {}
+        candidate_name = candidate_info.get("full_name") or "resume"
+        safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
+
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}_crafted.docx"'
+            },
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Database lookup failed: {e}")
-    if not craft_res.data:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Crafted resume '{craft_id}' not found. Craft it before downloading.",
-        )
-
-    craft = craft_res.data[0]
-    file_path = craft.get("formatted_file_path")
-
-    # 2. The record must point at a generated file.
-    if not file_path:
-        raise HTTPException(
-            status_code=404,
-            detail="No formatted DOCX exists for this crafted resume yet — re-run crafting to generate it.",
-        )
-
-    # 3. The file must actually be present in Supabase storage.
-    try:
-        content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(file_path)
-    except Exception as e:
-        raise HTTPException(
-            status_code=502,
-            detail=(
-                f"Formatted file '{file_path}' could not be fetched from storage "
-                f"bucket '{settings.FORMATTED_BUCKET}': {e}"
-            ),
-        )
-    if not content:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Formatted file '{file_path}' is missing from storage bucket '{settings.FORMATTED_BUCKET}'.",
-        )
-
-    # 4. Build a safe filename (structured_data may be null/missing).
-    structured_data = craft.get("structured_data") or {}
-    candidate_info = structured_data.get("candidate_info") or {}
-    candidate_name = candidate_info.get("full_name") or "resume"
-    safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
-
-    return Response(
-        content=content,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_crafted.docx"'
-        },
-    )
+        traceback.print_exc()
+        logger.exception("DOCX download failed for craft_id=%s", craft_id)
+        raise HTTPException(status_code=500, detail=f"DOCX download failed: {e}")
 
 
 # ── PDF downloads ────────────────────────────────────────────
@@ -132,28 +145,36 @@ async def download_resume_pdf(
     authorization: Optional[str] = Header(None),
 ):
     """Download crafted resume as PDF (without scorecard)."""
-    _get_user(authorization)
-    craft, score, job = _fetch_craft_and_score(craft_id)
+    try:
+        _get_user(authorization)
+        craft, score, job = _fetch_craft_and_score(craft_id)
 
-    structured_data = craft.get("structured_data", {})
-    craft_settings = craft.get("craft_settings", {})
-    logo_path = craft_settings.get("logo_storage_path")
+        structured_data = craft.get("structured_data") or {}
+        craft_settings = craft.get("craft_settings") or {}
+        logo_path = craft_settings.get("logo_storage_path")
 
-    pdf_bytes = generate_resume_pdf(
-        data=structured_data,
-        company_name=craft_settings.get("company_name", "HYROI Solutions"),
-        mask_contacts=craft_settings.get("mask_pi", False),
-        logo_path=logo_path,
-    )
+        pdf_bytes = generate_resume_pdf(
+            data=structured_data,
+            company_name=craft_settings.get("company_name", "HYROI Solutions"),
+            mask_contacts=craft_settings.get("mask_pi", False),
+            logo_path=logo_path,
+        )
 
-    candidate_name = structured_data.get("candidate_info", {}).get("full_name", "resume")
-    safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
+        candidate_info = structured_data.get("candidate_info") or {}
+        candidate_name = candidate_info.get("full_name") or "resume"
+        safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
 
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}_resume.pdf"'},
-    )
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_resume.pdf"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.exception("Resume PDF download failed for craft_id=%s", craft_id)
+        raise HTTPException(status_code=500, detail=f"Resume PDF download failed: {e}")
 
 
 @router.get("/{craft_id}/scorecard-pdf")
@@ -162,37 +183,44 @@ async def download_scorecard_pdf(
     authorization: Optional[str] = Header(None),
 ):
     """Download ScorQ scorecard as PDF (matches existing ScorQ format)."""
-    _get_user(authorization)
-    craft, score, job = _fetch_craft_and_score(craft_id)
+    try:
+        _get_user(authorization)
+        craft, score, job = _fetch_craft_and_score(craft_id)
 
-    candidate = score.get("candidates", {})
-    craft_settings = craft.get("craft_settings", {})
-    logo_path = craft_settings.get("logo_storage_path")
+        candidate = score.get("candidates") or {}
+        craft_settings = craft.get("craft_settings") or {}
+        logo_path = craft_settings.get("logo_storage_path")
 
-    # Apply PI masking to scorecard if enabled
-    mask = craft_settings.get("mask_pi", False)
+        # Apply PI masking to scorecard if enabled
+        mask = craft_settings.get("mask_pi", False)
 
-    pdf_bytes = generate_scorecard_pdf(
-        candidate_name=candidate.get("name", "Unknown"),
-        candidate_email=None if mask else candidate.get("email"),
-        candidate_phone=None if mask else candidate.get("phone"),
-        overall_score=score.get("overall_score", 0),
-        category_scores=score.get("category_scores", {}),
-        matched_skills=score.get("matched_skills", []),
-        missing_skills=score.get("missing_skills", []),
-        highlights=score.get("highlights", []),
-        red_flags=score.get("red_flags", []),
-        ai_reasoning=score.get("ai_reasoning", ""),
-        job_title=job.get("title", ""),
-        logo_path=logo_path,
-    )
+        pdf_bytes = generate_scorecard_pdf(
+            candidate_name=candidate.get("name", "Unknown"),
+            candidate_email=None if mask else candidate.get("email"),
+            candidate_phone=None if mask else candidate.get("phone"),
+            overall_score=score.get("overall_score", 0),
+            category_scores=score.get("category_scores", {}),
+            matched_skills=score.get("matched_skills", []),
+            missing_skills=score.get("missing_skills", []),
+            highlights=score.get("highlights", []),
+            red_flags=score.get("red_flags", []),
+            ai_reasoning=score.get("ai_reasoning", ""),
+            job_title=job.get("title", ""),
+            logo_path=logo_path,
+        )
 
-    safe_name = candidate.get("name", "scorecard").encode("ascii", "ignore").decode("ascii").strip()
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe_name}_scorecard.pdf"'},
-    )
+        safe_name = (candidate.get("name") or "scorecard").encode("ascii", "ignore").decode("ascii").strip() or "scorecard"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_scorecard.pdf"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.exception("Scorecard PDF download failed for craft_id=%s", craft_id)
+        raise HTTPException(status_code=500, detail=f"Scorecard PDF download failed: {e}")
 
 
 @router.get("/{craft_id}/combined-pdf")
@@ -204,40 +232,47 @@ async def download_combined_pdf(
     Combined PDF: crafted resume pages + full scorecard as last page.
     Action items are NOT included — they're internal-only.
     """
-    _get_user(authorization)
-    craft, score, job = _fetch_craft_and_score(craft_id)
+    try:
+        _get_user(authorization)
+        craft, score, job = _fetch_craft_and_score(craft_id)
 
-    structured_data = craft.get("structured_data", {})
-    candidate = score.get("candidates", {})
-    craft_settings = craft.get("craft_settings", {})
-    mask = craft_settings.get("mask_pi", False)
-    logo_path = craft_settings.get("logo_storage_path")
+        structured_data = craft.get("structured_data") or {}
+        candidate = score.get("candidates") or {}
+        craft_settings = craft.get("craft_settings") or {}
+        mask = craft_settings.get("mask_pi", False)
+        logo_path = craft_settings.get("logo_storage_path")
 
-    pdf_bytes = generate_combined_pdf(
-        # Resume data
-        resume_data=structured_data,
-        company_name=craft_settings.get("company_name", "HYROI Solutions"),
-        mask_contacts=mask,
-        # Scorecard data
-        candidate_name=candidate.get("name", "Unknown"),
-        candidate_email=None if mask else candidate.get("email"),
-        candidate_phone=None if mask else candidate.get("phone"),
-        overall_score=score.get("overall_score", 0),
-        category_scores=score.get("category_scores", {}),
-        matched_skills=score.get("matched_skills", []),
-        missing_skills=score.get("missing_skills", []),
-        highlights=score.get("highlights", []),
-        red_flags=score.get("red_flags", []),
-        ai_reasoning=score.get("ai_reasoning", ""),
-        job_title=job.get("title", ""),
-        logo_path=logo_path,
-    )
+        pdf_bytes = generate_combined_pdf(
+            # Resume data
+            resume_data=structured_data,
+            company_name=craft_settings.get("company_name", "HYROI Solutions"),
+            mask_contacts=mask,
+            # Scorecard data
+            candidate_name=candidate.get("name", "Unknown"),
+            candidate_email=None if mask else candidate.get("email"),
+            candidate_phone=None if mask else candidate.get("phone"),
+            overall_score=score.get("overall_score", 0),
+            category_scores=score.get("category_scores", {}),
+            matched_skills=score.get("matched_skills", []),
+            missing_skills=score.get("missing_skills", []),
+            highlights=score.get("highlights", []),
+            red_flags=score.get("red_flags", []),
+            ai_reasoning=score.get("ai_reasoning", ""),
+            job_title=job.get("title", ""),
+            logo_path=logo_path,
+        )
 
-    safe_name = candidate.get("name", "candidate").encode("ascii", "ignore").decode("ascii").strip()
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{safe_name}_scorcraft.pdf"'
-        },
-    )
+        safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}_scorcraft.pdf"'
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.exception("Combined PDF download failed for craft_id=%s", craft_id)
+        raise HTTPException(status_code=500, detail=f"Combined PDF download failed: {e}")
