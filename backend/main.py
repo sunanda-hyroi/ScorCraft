@@ -2,8 +2,12 @@
 ScorCraft by HYROI Solutions — FastAPI Backend
 Merged scoring (ScorQ) + crafting (CraftQ) pipeline.
 """
-from fastapi import FastAPI
+import re
+
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from api.auth import router as auth_router
 from api.jobs import router as jobs_router
@@ -35,6 +39,35 @@ if settings.FRONTEND_URL:
 # De-dupe while preserving order (FRONTEND_URL may repeat one of the above).
 _allowed_origins = list(dict.fromkeys(_allowed_origins))
 
+_allowed_origin_regex = re.compile(r"https://.*\.(app\.github\.dev|vercel\.app)")
+
+
+def _origin_allowed(origin: str) -> bool:
+    """Mirror CORSMiddleware's allow rules for use in exception handlers."""
+    if not origin:
+        return False
+    return origin in _allowed_origins or bool(_allowed_origin_regex.fullmatch(origin))
+
+
+def _cors_headers(request: Request) -> dict:
+    """CORS headers to attach to error responses generated above (outside)
+    CORSMiddleware — e.g. unhandled 500s from ServerErrorMiddleware, which
+    otherwise reach the browser with no Access-Control-Allow-Origin and show
+    up as a misleading 'CORS error'."""
+    origin = request.headers.get("origin", "")
+    if not _origin_allowed(origin):
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
+# CORSMiddleware must be the OUTERMOST middleware so it wraps every response,
+# including errors. It is the only middleware here, so it is already outermost;
+# if more middleware is added later, keep this add_middleware call LAST (Starlette
+# wraps the last-added middleware outermost).
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_allowed_origins,
@@ -43,6 +76,29 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# Even with CORSMiddleware installed, unhandled exceptions are turned into 500s
+# by Starlette's ServerErrorMiddleware, which sits ABOVE CORSMiddleware — so
+# those responses never pass back through it and arrive at the browser without
+# CORS headers. These handlers regenerate the error responses WITH CORS headers
+# so the frontend sees the real status (401/500) instead of a generic CORS wall.
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail},
+        headers={**(exc.headers or {}), **_cors_headers(request)},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Internal server error: {exc}"},
+        headers=_cors_headers(request),
+    )
 
 # ── ScorQ pipeline (score first) ─────────────────────────────
 app.include_router(auth_router)

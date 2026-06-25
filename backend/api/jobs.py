@@ -4,6 +4,7 @@ Job Description endpoints — create, list, get, update, delete
 from fastapi import APIRouter, HTTPException, Header, Body
 from pydantic import BaseModel
 from typing import Optional
+import logging
 import httpx
 from db.supabase_client import supabase
 from config import settings
@@ -18,8 +19,12 @@ def _get_auth_user(authorization: Optional[str]):
     token = authorization.replace("Bearer ", "")
     try:
         return supabase.auth.get_user(token).user
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        # If this fires for every request in prod, suspect a Supabase project
+        # mismatch: the backend's SUPABASE_URL must be the SAME project the
+        # frontend's NEXT_PUBLIC_SUPABASE_URL issues tokens for.
+        logging.getLogger("scorcraft.jobs").warning("Token validation failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 def _get_user(authorization: Optional[str]) -> str:

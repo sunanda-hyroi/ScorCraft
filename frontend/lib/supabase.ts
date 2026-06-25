@@ -18,3 +18,18 @@ export const supabase = createClient(url, anonKey, {
     autoRefreshToken: true,
   },
 });
+
+// Mirror the live session's access token into localStorage on sign-in and on
+// every auto-refresh, and clear it on sign-out. This keeps the synchronous
+// getToken() fallback (used by the route guard) from going stale — sending a
+// stale, expired token was the cause of the production 401s.
+if (typeof window !== "undefined") {
+  supabase.auth.onAuthStateChange((_event, session) => {
+    const token = session?.access_token;
+    if (token) {
+      window.localStorage.setItem(TOKEN_KEY, token);
+    } else {
+      window.localStorage.removeItem(TOKEN_KEY);
+    }
+  });
+}

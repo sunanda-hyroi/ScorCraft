@@ -15,6 +15,7 @@
  * but we also treat 401/403/502/network failures and the `/health`
  * `configured: false` flag as "not live" so the demo works out of the box.
  */
+import { supabase } from "./supabase";
 
 // Known production backend (Railway). Used as a last-resort fallback in
 // production builds so the app never silently drops to demo mode when the
@@ -55,9 +56,10 @@ export class DemoModeError extends Error {
 const DEGRADED_STATUSES = new Set([401, 403, 500, 502, 503, 504]);
 
 // ── Auth token ───────────────────────────────────────────────────
-// The prototype has no login flow yet. Supply a Supabase access token via
-// localStorage("scorcraft_token") or NEXT_PUBLIC_DEV_TOKEN to exercise live
-// endpoints; without one, authenticated calls fall back to demo mode.
+// Synchronous best-effort token: the last value persisted to localStorage.
+// Used where async isn't possible (e.g. ScorCraft.jsx route guard). May be
+// stale after Supabase auto-refreshes the access token — prefer getAuthToken()
+// for actual API calls.
 export function getToken(): string {
   if (typeof window !== "undefined") {
     const stored = window.localStorage.getItem("scorcraft_token");
@@ -66,8 +68,31 @@ export function getToken(): string {
   return process.env.NEXT_PUBLIC_DEV_TOKEN || "";
 }
 
-function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
-  const token = getToken();
+// Authoritative token for API calls: read the *live* Supabase session so we
+// always send the current (auto-refreshed) access token. The token captured at
+// login and stored in localStorage expires after ~1h while the session keeps a
+// fresh one; sending the stale token is what caused the 401s in production.
+export async function getAuthToken(): Promise<string> {
+  if (typeof window !== "undefined") {
+    try {
+      const { data } = await supabase.auth.getSession();
+      const token = data.session?.access_token;
+      if (token) {
+        // Keep the synchronous fallback in sync with the refreshed token.
+        window.localStorage.setItem("scorcraft_token", token);
+        return token;
+      }
+    } catch {
+      /* fall through to the persisted/dev token */
+    }
+  }
+  return getToken();
+}
+
+async function authHeaders(
+  extra: Record<string, string> = {}
+): Promise<Record<string, string>> {
+  const token = await getAuthToken();
   return token ? { Authorization: `Bearer ${token}`, ...extra } : { ...extra };
 }
 
@@ -109,7 +134,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     res = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: authHeaders(init.headers as Record<string, string>),
+      headers: await authHeaders(init.headers as Record<string, string>),
     });
   } catch (e) {
     // Network failure / backend down → demo mode.
@@ -384,7 +409,7 @@ export async function downloadCraft(
   let res: Response;
   try {
     res = await fetch(`${API_BASE}/api/v1/download/${craftId}/${kind}`, {
-      headers: authHeaders(),
+      headers: await authHeaders(),
     });
   } catch (e) {
     throw new DemoModeError(`Network error: ${(e as Error).message}`, 0);

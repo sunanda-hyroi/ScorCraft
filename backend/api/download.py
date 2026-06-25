@@ -7,6 +7,8 @@ Options:
 
 Action items are NEVER included in downloads — they're internal-only.
 """
+import logging
+
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import Response
 from typing import Optional
@@ -21,6 +23,7 @@ from config import settings
 
 
 router = APIRouter(prefix="/api/v1/download", tags=["download"])
+logger = logging.getLogger("scorcraft.download")
 
 
 def _get_user(authorization: Optional[str]) -> str:
@@ -30,8 +33,12 @@ def _get_user(authorization: Optional[str]) -> str:
     try:
         user = supabase.auth.get_user(token)
         return user.user.id
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    except Exception as e:
+        # A common prod cause: the backend's SUPABASE_URL points at a different
+        # project than the frontend issued the token for, so validation always
+        # fails. Log the reason (server-side only) to make that diagnosable.
+        logger.warning("Token validation failed: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
 def _fetch_craft_and_score(craft_id: str) -> tuple:
@@ -64,32 +71,57 @@ async def download_docx(
     """Download crafted resume as DOCX."""
     _get_user(authorization)
 
-    craft_res = supabase.table("crafted_resumes").select("*").eq("id", craft_id).execute()
+    # 1. The crafted_resumes record must exist.
+    try:
+        craft_res = supabase.table("crafted_resumes").select("*").eq("id", craft_id).execute()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Database lookup failed: {e}")
     if not craft_res.data:
-        raise HTTPException(status_code=404, detail="Crafted resume not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Crafted resume '{craft_id}' not found. Craft it before downloading.",
+        )
 
     craft = craft_res.data[0]
     file_path = craft.get("formatted_file_path")
 
+    # 2. The record must point at a generated file.
     if not file_path:
-        raise HTTPException(status_code=404, detail="No formatted file available")
+        raise HTTPException(
+            status_code=404,
+            detail="No formatted DOCX exists for this crafted resume yet — re-run crafting to generate it.",
+        )
 
+    # 3. The file must actually be present in Supabase storage.
     try:
         content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(file_path)
-        candidate_name = craft.get("structured_data", {}).get(
-            "candidate_info", {}
-        ).get("full_name", "resume")
-        safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
-
-        return Response(
-            content=content,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            headers={
-                "Content-Disposition": f'attachment; filename="{safe_name}_crafted.docx"'
-            },
-        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        raise HTTPException(
+            status_code=502,
+            detail=(
+                f"Formatted file '{file_path}' could not be fetched from storage "
+                f"bucket '{settings.FORMATTED_BUCKET}': {e}"
+            ),
+        )
+    if not content:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Formatted file '{file_path}' is missing from storage bucket '{settings.FORMATTED_BUCKET}'.",
+        )
+
+    # 4. Build a safe filename (structured_data may be null/missing).
+    structured_data = craft.get("structured_data") or {}
+    candidate_info = structured_data.get("candidate_info") or {}
+    candidate_name = candidate_info.get("full_name") or "resume"
+    safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
+
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_name}_crafted.docx"'
+        },
+    )
 
 
 # ── PDF downloads ────────────────────────────────────────────
