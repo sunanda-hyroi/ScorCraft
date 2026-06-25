@@ -91,6 +91,66 @@ def _fetch_craft_and_score(craft_id: str) -> tuple:
     return craft, score, job
 
 
+# ── Scorecard PDF straight from a score (no craft needed) ───
+# Used at the Review & Filter stage, before any resume is crafted.
+
+@router.get("/score/{score_id}/scorecard-pdf")
+async def download_score_scorecard_pdf(
+    score_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Generate the scorecard PDF directly from a score record — no craft_id
+    required. (Three-segment path, so it never collides with the craft routes
+    at /{craft_id}/scorecard-pdf.)"""
+    try:
+        _get_user(authorization)
+
+        score_res = supabase.table("scores").select(
+            "*, candidates(*)"
+        ).eq("id", score_id).execute()
+        if not score_res.data:
+            raise HTTPException(status_code=404, detail=f"Score '{score_id}' not found.")
+        score = score_res.data[0]
+        candidate = score.get("candidates") or {}
+
+        job = {}
+        if score.get("job_id"):
+            try:
+                jr = supabase.table("job_descriptions").select("title").eq(
+                    "id", score["job_id"]).execute()
+                job = jr.data[0] if jr.data else {}
+            except Exception:
+                job = {}
+
+        pdf_bytes = generate_scorecard_pdf(
+            candidate_name=candidate.get("name", "Unknown"),
+            candidate_email=candidate.get("email"),
+            candidate_phone=candidate.get("phone"),
+            overall_score=score.get("overall_score", 0),
+            category_scores=score.get("category_scores", {}),
+            matched_skills=score.get("matched_skills", []),
+            missing_skills=score.get("missing_skills", []),
+            highlights=score.get("highlights", []),
+            red_flags=score.get("red_flags", []),
+            ai_reasoning=score.get("ai_reasoning", ""),
+            job_title=job.get("title", ""),
+        )
+
+        safe_name = (candidate.get("name") or "scorecard").encode(
+            "ascii", "ignore").decode("ascii").strip() or "scorecard"
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}_scorecard.pdf"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.exception("Score scorecard PDF failed for score_id=%s", score_id)
+        raise HTTPException(status_code=500, detail=f"Scorecard PDF download failed: {e}")
+
+
 # ── DOCX download (resume only) ─────────────────────────────
 
 @router.get("/{craft_id}/docx")

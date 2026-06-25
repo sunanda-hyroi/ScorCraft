@@ -631,6 +631,18 @@ export default function ScorCraft(){
     alert(`Demo mode — downloads need a live backend.\n\nWould download: ${kind} (${format})\nPI masked: ${maskPI} · Logo: ${logoUrl?"Yes":"No"}\n\nAdd credentials to backend/.env and craft a resume to enable real downloads.`);
   },[demoMode,maskPI,logoUrl,fallbackToDemo]);
 
+  // Review & Filter stage: download the scorecard PDF straight from the score
+  // (no craft_id needed) via /api/v1/download/score/:scoreId/scorecard-pdf.
+  const downloadScorecard=useCallback(async(cand)=>{
+    if(!demoMode&&cand.scoreId){
+      try{
+        await api.downloadScoreScorecard(cand.scoreId,`${cand.name}_scorecard.pdf`);
+        return;
+      }catch(e){fallbackToDemo(e);}
+    }
+    alert(`Demo mode — the scorecard download needs a live backend and a scored candidate.`);
+  },[demoMode,fallbackToDemo]);
+
   const filtered=candidates.filter(c=>c.score>=scoreRange[0]&&c.score<=scoreRange[1]);
   const toggleSelect=id=>{setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});};
   const selectAll=()=>{const ids=new Set(filtered.map(c=>c.id));setSelected(filtered.every(c=>selected.has(c.id))?new Set():ids);};
@@ -827,7 +839,7 @@ export default function ScorCraft(){
       {/* Rows */}
       {filtered.map(c=>(
         <CandidateRow key={c.id} c={c} job={jobForDisplay} cutoff={cutoff} selected={selected.has(c.id)} masked={maskPI} logoUrl={logoUrl}
-          onToggle={()=>toggleSelect(c.id)} onCraft={()=>{setCraftQueue([c]);setStep("craft");}} onViewScorecard={()=>setViewScorecard(c)} onDownload={()=>setDownloadModal(c)}/>
+          onToggle={()=>toggleSelect(c.id)} onCraft={()=>{setCraftQueue([c]);setStep("craft");}} onViewScorecard={()=>setViewScorecard(c)} onDownload={()=>downloadScorecard(c)}/>
       ))}
     </div>
     );
@@ -1149,7 +1161,7 @@ function CandidateRow({c,job,cutoff,selected,masked,logoUrl,onToggle,onCraft,onV
           <div style={{display:"flex",gap:6}}>
             <button style={S.btnO} onClick={e=>{e.stopPropagation();onViewScorecard();}}>View scorecard</button>
             {above&&<button style={S.btnG} onClick={e=>{e.stopPropagation();onCraft();}}>Craft resume →</button>}
-            <button style={S.btnO} onClick={e=>{e.stopPropagation();onDownload();}}>Download</button>
+            <button style={S.btnO} onClick={e=>{e.stopPropagation();onDownload();}}>Download scorecard</button>
           </div>
         </div>
       )}

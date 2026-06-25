@@ -397,20 +397,13 @@ export async function updateCraft(
 }
 
 /**
- * DownloadModal → GET /api/v1/download/:id/{kind}
- * Downloads require the Authorization header, so a plain <a href> won't work.
- * We fetch the file as a blob and trigger a browser download.
+ * Authenticated file download: fetch a path as a blob (the Authorization header
+ * means a plain <a href> won't work) and trigger a browser download.
  */
-export async function downloadCraft(
-  craftId: string,
-  kind: DownloadKind,
-  filename?: string
-): Promise<void> {
+async function fetchAndSave(path: string, filename: string): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/api/v1/download/${craftId}/${kind}`, {
-      headers: await authHeaders(),
-    });
+    res = await fetch(`${API_BASE}${path}`, { headers: await authHeaders() });
   } catch (e) {
     throw new DemoModeError(`Network error: ${(e as Error).message}`, 0);
   }
@@ -424,9 +417,35 @@ export async function downloadCraft(
   const url = window.URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename || `${craftId}.${kind.includes("pdf") ? "pdf" : "docx"}`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   window.URL.revokeObjectURL(url);
+}
+
+/** DownloadModal (Craft stage) → GET /api/v1/download/:craftId/{kind} */
+export async function downloadCraft(
+  craftId: string,
+  kind: DownloadKind,
+  filename?: string
+): Promise<void> {
+  return fetchAndSave(
+    `/api/v1/download/${craftId}/${kind}`,
+    filename || `${craftId}.${kind.includes("pdf") ? "pdf" : "docx"}`
+  );
+}
+
+/**
+ * Review & Filter stage → GET /api/v1/download/score/:scoreId/scorecard-pdf
+ * Generates the scorecard straight from the score record — no craft needed.
+ */
+export async function downloadScoreScorecard(
+  scoreId: string,
+  filename?: string
+): Promise<void> {
+  return fetchAndSave(
+    `/api/v1/download/score/${scoreId}/scorecard-pdf`,
+    filename || `${scoreId}_scorecard.pdf`
+  );
 }
