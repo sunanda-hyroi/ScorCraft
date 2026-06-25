@@ -23,7 +23,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_RIGHT
 from reportlab.pdfgen import canvas
-from reportlab.graphics.shapes import Drawing, Rect
+from reportlab.graphics.shapes import Drawing, Rect, Circle
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
     HRFlowable, PageBreak, Image as RLImage,
@@ -48,6 +48,24 @@ BLUE = colors.HexColor("#2563EB")
 PURPLE = colors.HexColor("#7C3AED")
 ORANGE = colors.HexColor("#EA580C")
 TEAL = colors.HexColor("#0891B2")
+
+# ── Original ScorQ scorecard palette (from the UI Scorecard component) ──
+SC_BAND_BG = colors.HexColor("#F8FAFC")     # candidate-info band
+SC_BOX_BG = colors.white                    # score boxes (top-right of band)
+SC_CARD_BG = colors.HexColor("#F9FAFB")     # breakdown / highlights cards
+SC_BORDER = colors.HexColor("#E5E7EB")      # all card/box borders + bar track
+SC_TRACK = colors.HexColor("#E5E7EB")       # progress-bar track
+SC_SECTION = colors.HexColor("#6B7280")     # uppercase section labels
+SC_CAT_NAME = colors.HexColor("#1F2937")    # breakdown card category name
+SC_REASON = colors.HexColor("#4B5563")      # breakdown reasoning text
+SC_HILITE = colors.HexColor("#374151")      # highlight bullet text
+SC_MUTED = colors.HexColor("#D1D5DB")       # null score "—"
+SC_CHIP_BG = colors.HexColor("#EEF2FF")     # matched-skill chip bg
+SC_CHIP_FG = colors.HexColor("#4338CA")     # matched-skill chip text (indigo)
+SC_AI_BG = colors.HexColor("#FFF7ED")       # AI assessment box bg
+SC_AI_BORDER = colors.HexColor("#FED7AA")   # AI assessment box border
+SC_AI_LABEL = colors.HexColor("#C2410C")    # AI assessment label
+SC_AI_TEXT = colors.HexColor("#9A3412")     # AI assessment text
 
 # Usable content width (A4 minus 1.5cm margins each side).
 CONTENT_W = A4[0] - 3 * cm
@@ -232,13 +250,14 @@ def _chips(items, bg_hex, fg_hex, max_width=CONTENT_W, font_size=8):
     bg = colors.HexColor(bg_hex)
     gap = 5
     rows, cur, cur_w = [], [], 0.0
-    char_w = font_size * 0.58
+    char_w = font_size * 0.62
     for it in items:
         text = str(it).strip()
         if not text:
             continue
-        # Estimate chip width: padding + per-char width, capped to the line.
-        w = min(12 + len(text) * char_w, max_width)
+        # Estimate chip width: padding + per-char width, with a floor so short
+        # tokens (e.g. "AWS", "Go") never wrap inside the chip. Capped to line.
+        w = min(max(34, 16 + len(text) * char_w), max_width)
         if cur and cur_w + w + gap > max_width:
             rows.append(cur)
             cur, cur_w = [], 0.0
@@ -586,13 +605,18 @@ def generate_resume_pdf(
 # 2. SCORECARD PDF (matches the UI scorecard design)
 # ═════════════════════════════════════════════════════════════
 
-# Category → (label, score key, accent color used for the indicator square,
-# the score %, and the progress bar). Mirrors the UI accent colors.
+# Original ScorQ categories (from the UI Scorecard component):
+# (full_label, short_label, score_key, accent_color, bar_color)
+# Breakdown cards use full_label; the top score boxes use short_label.
 _CAT_CONFIG = [
-    ("Technical", "technical", BLUE),
-    ("Experience", "experience", GREEN),
-    ("Education", "education", PURPLE),
-    ("Stability", "stability", ORANGE),
+    ("Technical Skills", "Technical", "technical",
+     colors.HexColor("#2563EB"), colors.HexColor("#3B82F6")),
+    ("Experience", "Experience", "experience",
+     colors.HexColor("#059669"), colors.HexColor("#10B981")),
+    ("Education", "Education", "education",
+     colors.HexColor("#7C3AED"), colors.HexColor("#8B5CF6")),
+    ("Stability", "Stability", "stability",
+     colors.HexColor("#059669"), colors.HexColor("#10B981")),
 ]
 
 
@@ -635,176 +659,238 @@ def _cert_names(certifications):
     return names
 
 
+def _sc_section_label(text):
+    """Gray uppercase section label, matching the UI scorecard."""
+    return Paragraph(
+        f'<font color="{_hex(SC_SECTION)}"><b>{text}</b></font>',
+        ParagraphStyle("ScLabel", fontName="Helvetica-Bold", fontSize=9,
+            textColor=SC_SECTION, leading=12))
+
+
+def _round_icon(color, d=9):
+    """Small filled circle indicator in the category color (stands in for the
+    UI's emoji icon, which doesn't render in ReportLab fonts)."""
+    dr = Drawing(d, d)
+    dr.add(Circle(d / 2.0, d / 2.0, d / 2.0, fillColor=color, strokeColor=None))
+    return dr
+
+
 def _build_scorecard_story(
     styles, candidate_name, candidate_email, candidate_phone,
     overall_score, category_scores, matched_skills, missing_skills,
     highlights, red_flags, ai_reasoning, job_title, certifications=None,
 ):
-    """Scorecard flowables, laid out to mirror the UI scorecard."""
+    """Scorecard flowables — replicates the original ScorQ UI scorecard
+    (exact colors, layout, and section order from the Scorecard component)."""
     category_scores = category_scores or {}
     story = []
 
-    # ── Navy header bar ──────────────────────────────────────
+    # ── Navy header: ScorQ branding (left) + CANDIDATE SCORECARD (right) ──
     brand_left = Paragraph(
-        '<b><font color="#FFFFFF">Scor</font><font color="#C8963E">Q</font></b>'
-        '<font color="#8899AA" size="7">  by HYROI Solutions</font>',
-        ParagraphStyle("Brand", fontName="Helvetica-Bold", fontSize=15, leading=18))
+        '<font color="#FFFFFF" size="16"><b>Scor</b></font>'
+        '<font color="#C8963E" size="16"><b>Q</b></font>'
+        '  <font color="#B9C2CF" size="8">by HYROI Solutions</font>',
+        ParagraphStyle("Brand", fontName="Helvetica-Bold", fontSize=16, leading=18))
     brand_sub = Paragraph(
         "AI-powered resume scoring",
         ParagraphStyle("BrandSub", fontName="Helvetica", fontSize=8,
-            textColor=colors.HexColor("#8899AA"), leading=10))
+            textColor=colors.HexColor("#B9C2CF"), leading=12))
     date_text = Paragraph(
-        f'<b>CANDIDATE SCORECARD</b><br/>'
-        f'<font color="#B0C4DE" size="8">{datetime.now().strftime("%d %B %Y")}</font>',
-        ParagraphStyle("DateR", fontName="Helvetica-Bold", fontSize=9,
-            textColor=WHITE, alignment=TA_RIGHT, leading=13))
-    header_table = Table([[[brand_left, brand_sub], date_text]],
-                         colWidths=[13 * cm, CONTENT_W - 13 * cm])
-    header_table.setStyle(TableStyle([
+        '<font color="#B9C2CF" size="8">CANDIDATE SCORECARD</font><br/>'
+        f'<font color="#CBD5E1" size="9">{datetime.now().strftime("%d %B %Y")}</font>',
+        ParagraphStyle("DateR", fontName="Helvetica", fontSize=9,
+            alignment=TA_RIGHT, leading=13))
+    header = Table([[[brand_left, brand_sub], date_text]],
+                   colWidths=[CONTENT_W - 5 * cm, 5 * cm])
+    header.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), NAVY),
-        ("TOPPADDING", (0, 0), (-1, -1), 9),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 9),
+        ("TOPPADDING", (0, 0), (-1, -1), 10),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ("LEFTPADDING", (0, 0), (0, 0), 12),
+        ("RIGHTPADDING", (-1, -1), (-1, -1), 12),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+    ]))
+    story.append(header)
+
+    # ── Candidate-info band (#F8FAFC): name + contacts (L) | score boxes (R) ──
+    info_left = [Paragraph(
+        f"<b>{candidate_name or 'Candidate'}</b>",
+        ParagraphStyle("CandName", fontName="Helvetica-Bold", fontSize=17,
+            textColor=NAVY, leading=20))]
+    contact_bits = []
+    if candidate_email:
+        contact_bits.append(candidate_email)
+    if candidate_phone:
+        contact_bits.append(candidate_phone)
+    if contact_bits:
+        info_left.append(Paragraph(
+            "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(contact_bits),
+            ParagraphStyle("Contact", fontName="Helvetica", fontSize=9,
+                textColor=SC_SECTION, leading=12, spaceBefore=3)))
+
+    box_w, gutter = 2.55 * cm, 0.18 * cm
+
+    def _score_box(short_label, key, color, bar_color):
+        sc, _ = _score_and_reason(category_scores, key)
+        val_color = color if sc is not None else SC_MUTED
+        cell = [
+            Paragraph(f'<font color="{_hex(color)}"><b>{short_label}</b></font>',
+                ParagraphStyle("Bx", fontName="Helvetica-Bold", fontSize=8,
+                    alignment=TA_CENTER, leading=10)),
+            Spacer(1, 1),
+            Paragraph(f'<font color="{_hex(val_color)}"><b>{_pct(sc)}</b></font>',
+                ParagraphStyle("BxP", fontName="Helvetica-Bold", fontSize=15,
+                    alignment=TA_CENTER, leading=17)),
+            Spacer(1, 3),
+            _bar(sc, 1.9 * cm, bar_color, height=4),
+        ]
+        box = Table([[cell]], colWidths=[box_w])
+        box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), SC_BOX_BG),
+            ("BOX", (0, 0), (-1, -1), 0.5, SC_BORDER),
+            ("ROUNDEDCORNERS", [5, 5, 5, 5]),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ]))
+        return box
+
+    boxes = [_score_box(short, key, col, bar)
+             for (full, short, key, col, bar) in _CAT_CONFIG]
+    box_cells, box_widths = [], []
+    for i, b in enumerate(boxes):
+        box_cells.append(b)
+        box_widths.append(box_w)
+        if i < len(boxes) - 1:
+            box_cells.append("")
+            box_widths.append(gutter)
+    boxes_row = Table([box_cells], colWidths=box_widths)
+    boxes_row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+    ]))
+
+    boxes_total = 4 * box_w + 3 * gutter
+    band = Table([[info_left, boxes_row]],
+                 colWidths=[CONTENT_W - boxes_total, boxes_total])
+    band.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), SC_BAND_BG),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.5, SC_BORDER),
+        ("TOPPADDING", (0, 0), (-1, -1), 12),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
         ("LEFTPADDING", (0, 0), (0, 0), 12),
         ("RIGHTPADDING", (-1, -1), (-1, -1), 12),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
     ]))
-    story.append(header_table)
+    story.append(band)
+    story.append(Spacer(1, 10))
+
+    # ── Score Breakdown: 2×2 cards (#F9FAFB) ─────────────────
+    story.append(_sc_section_label("SCORE BREAKDOWN"))
     story.append(Spacer(1, 6))
 
-    # ── Candidate name + contacts ────────────────────────────
-    story.append(Paragraph(
-        f"<b>{candidate_name or 'Candidate'}</b>",
-        ParagraphStyle("CandName", fontName="Helvetica-Bold", fontSize=16,
-            textColor=NAVY, leading=19)))
-    contact_parts = []
-    if candidate_email:
-        contact_parts.append(f"Email: {candidate_email}")
-    if candidate_phone:
-        contact_parts.append(f"Phone: {candidate_phone}")
-    if job_title:
-        contact_parts.append(f"Role: {job_title}")
-    if contact_parts:
-        story.append(Paragraph(
-            "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(contact_parts),
-            ParagraphStyle("Contact", fontName="Helvetica", fontSize=8.5,
-                textColor=GRAY, leading=12)))
-    story.append(Spacer(1, 7))
-
-    # ── Four score boxes in a row ────────────────────────────
-    boxes = []
-    for label, key, color in _CAT_CONFIG:
-        sc, _ = _score_and_reason(category_scores, key)
-        color = color if sc is not None else GRAY
-        boxes.append([
-            Paragraph(f'<font color="{_hex(color)}">{label.upper()}</font>', styles["BoxLabel"]),
-            Spacer(1, 2),
-            Paragraph(f'<font color="{_hex(color)}">{_pct(sc)}</font>', styles["BoxPct"]),
-            Spacer(1, 4),
-            _bar(sc, 3.0 * cm, color),
-        ])
-    box_w = CONTENT_W / 4.0
-    box_table = Table([boxes], colWidths=[box_w] * 4)
-    box_table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, -1), CARD_BG),
-        ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
-        ("LINEAFTER", (0, 0), (-2, -1), 0.5, BORDER),
-        ("TOPPADDING", (0, 0), (-1, -1), 8),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-    ]))
-    story.append(box_table)
-    story.append(Spacer(1, 8))
-
-    # ── Score Breakdown: 2×2 cards ───────────────────────────
-    story.append(Paragraph("SCORE BREAKDOWN", styles["ScSection"]))
-    story.append(Spacer(1, 2))
-
-    def _card(label, key, color):
+    def _break_card(full_label, key, color, bar_color):
         sc, reasoning = _score_and_reason(category_scores, key)
-        accent = color if sc is not None else GRAY
+        val_color = color if sc is not None else SC_MUTED
         head = Table(
-            [[_square(accent),
-              Paragraph(
-                  f'<font color="{_hex(accent)}"><b>{label}</b></font>'
-                  f'&nbsp;&nbsp;<font color="{_hex(accent)}" size="12"><b>{_pct(sc)}</b></font>',
-                  styles["CardHead"])]],
-            colWidths=[0.45 * cm, 6.95 * cm])
+            [[_round_icon(color),
+              Paragraph(f'<b>{full_label}</b>',
+                  ParagraphStyle("CN", fontName="Helvetica-Bold", fontSize=11,
+                      textColor=SC_CAT_NAME, leading=13)),
+              Paragraph(f'<font color="{_hex(val_color)}"><b>{_pct(sc)}</b></font>',
+                  ParagraphStyle("CV", fontName="Helvetica-Bold", fontSize=13,
+                      alignment=TA_RIGHT, leading=15))]],
+            colWidths=[0.45 * cm, 5.3 * cm, 2.05 * cm])
         head.setStyle(TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 0),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-            ("TOPPADDING", (0, 0), (-1, -1), 0),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ("LEFTPADDING", (0, 0), (0, 0), 0), ("RIGHTPADDING", (0, 0), (0, 0), 4),
+            ("LEFTPADDING", (1, 0), (-1, -1), 0), ("RIGHTPADDING", (1, 0), (-1, -1), 0),
+            ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
         ]))
-        inner = [head, Spacer(1, 3), _bar(sc, 7.4 * cm, accent), Spacer(1, 3)]
-        # Truncate reasoning to ~3 lines so every card stays compact.
-        inner.append(Paragraph(
-            _truncate(reasoning, 150) or "No reasoning provided.", styles["CardBody"]))
-        card = Table([[inner]], colWidths=[8.4 * cm])
+        inner = [head, Spacer(1, 5), _bar(sc, 7.6 * cm, bar_color, height=5), Spacer(1, 6)]
+        inner.append(Paragraph(_truncate(reasoning, 220) or "—",
+            ParagraphStyle("RB", fontName="Helvetica", fontSize=8.5,
+                textColor=SC_REASON, leading=12)))
+        card = Table([[inner]], colWidths=[8.5 * cm])
         card.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), CARD_BG),
-            ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
-            ("ROUNDEDCORNERS", [6, 6, 6, 6]),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 7),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 7),
+            ("BACKGROUND", (0, 0), (-1, -1), SC_CARD_BG),
+            ("BOX", (0, 0), (-1, -1), 0.5, SC_BORDER),
+            ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ]))
         return card
 
-    cards = [_card(*cfg) for cfg in _CAT_CONFIG]
-    grid = Table(
-        [[cards[0], cards[1]], [cards[2], cards[3]]],
-        colWidths=[CONTENT_W / 2.0, CONTENT_W / 2.0])
+    cards = [_break_card(full, key, col, bar)
+             for (full, short, key, col, bar) in _CAT_CONFIG]
+    gw = 0.35 * cm
+    grid = Table([[cards[0], "", cards[1]], [cards[2], "", cards[3]]],
+                 colWidths=[8.5 * cm, gw, 8.5 * cm])
     grid.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (0, -1), 8),
-        ("RIGHTPADDING", (1, 0), (1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, 0), 0), ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("TOPPADDING", (0, 1), (-1, 1), 0), ("BOTTOMPADDING", (0, 1), (-1, 1), 0),
     ]))
     story.append(grid)
-    story.append(Spacer(1, 4))
+    story.append(Spacer(1, 8))
 
-    # ── Matched Skills (chips, single compact line) ──────────
+    # ── Matched Skills (indigo chips) ────────────────────────
     if matched_skills:
-        story.append(Paragraph("MATCHED SKILLS", styles["ScSection"]))
-        story.extend(_chips(matched_skills[:16], "#ECFDF5", "#059669", font_size=7.5))
-        story.append(Spacer(1, 3))
+        story.append(_sc_section_label("MATCHED SKILLS"))
+        story.append(Spacer(1, 4))
+        story.extend(_chips(matched_skills[:20], "#EEF2FF", "#4338CA", font_size=9))
+        story.append(Spacer(1, 8))
 
-    # ── Certifications (chips, if available) ─────────────────
-    cert_names = _cert_names(certifications)
-    if cert_names:
-        story.append(Paragraph("CERTIFICATIONS", styles["ScSection"]))
-        story.extend(_chips(cert_names[:16], "#FEF3C7", "#B45309", font_size=7.5))
-        story.append(Spacer(1, 3))
-
-    # ── Highlights (max 3 bullets) ───────────────────────────
+    # ── Highlights (card) ────────────────────────────────────
     if highlights:
-        story.append(Paragraph("HIGHLIGHTS", styles["ScSection"]))
-        for h in highlights[:3]:
-            story.append(Paragraph(f"• {_truncate(h, 150)}", styles["ScBullet"]))
-        story.append(Spacer(1, 3))
-
-    # ── AI Assessment (compact amber box, ~4 lines) ──────────
-    if ai_reasoning:
-        story.append(Paragraph("AI ASSESSMENT", styles["ScSection"]))
-        assess = Table(
-            [[Paragraph(_truncate(ai_reasoning, 480), styles["Reasoning"])]],
-            colWidths=[CONTENT_W])
-        assess.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF7ED")),
-            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#FED7AA")),
-            ("ROUNDEDCORNERS", [6, 6, 6, 6]),
-            ("TOPPADDING", (0, 0), (-1, -1), 6),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
-            ("LEFTPADDING", (0, 0), (-1, -1), 10),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+        inner = [_sc_section_label("HIGHLIGHTS"), Spacer(1, 4)]
+        for h in highlights[:5]:
+            inner.append(Paragraph(
+                f'•&nbsp;&nbsp;{_truncate(h, 160)}',
+                ParagraphStyle("HL", fontName="Helvetica", fontSize=9,
+                    textColor=SC_HILITE, leading=13, spaceAfter=2)))
+        box = Table([[inner]], colWidths=[CONTENT_W])
+        box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), SC_CARD_BG),
+            ("BOX", (0, 0), (-1, -1), 0.5, SC_BORDER),
+            ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
         ]))
-        story.append(assess)
+        story.append(box)
+        story.append(Spacer(1, 8))
+
+    # ── AI Assessment (amber box) ────────────────────────────
+    if ai_reasoning:
+        inner = [
+            Paragraph(f'<font color="{_hex(SC_AI_LABEL)}"><b>AI ASSESSMENT</b></font>',
+                ParagraphStyle("AIL", fontName="Helvetica-Bold", fontSize=9,
+                    textColor=SC_AI_LABEL, leading=12)),
+            Spacer(1, 4),
+            Paragraph(_truncate(ai_reasoning, 700),
+                ParagraphStyle("AIT", fontName="Helvetica", fontSize=9,
+                    textColor=SC_AI_TEXT, leading=13)),
+        ]
+        box = Table([[inner]], colWidths=[CONTENT_W])
+        box.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), SC_AI_BG),
+            ("BOX", (0, 0), (-1, -1), 0.5, SC_AI_BORDER),
+            ("ROUNDEDCORNERS", [8, 8, 8, 8]),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+            ("LEFTPADDING", (0, 0), (-1, -1), 12),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+        ]))
+        story.append(box)
 
     return story
 
