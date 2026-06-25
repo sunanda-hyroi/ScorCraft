@@ -28,6 +28,7 @@ _allowed_origins = [
     "http://127.0.0.1:3000",
     "https://recruitcraft.vercel.app",
     "https://recruitcraft-sunanda-hyrois-projects.vercel.app",
+    "https://scor-craft-cx1s0a723-sunanda-2822s-projects.vercel.app",
 ]
 if settings.FRONTEND_URL:
     _allowed_origins.append(settings.FRONTEND_URL.rstrip("/"))

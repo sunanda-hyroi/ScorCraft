@@ -16,15 +16,30 @@
  * `configured: false` flag as "not live" so the demo works out of the box.
  */
 
-// Absolute backend URL (Codespaces forwarded port) via NEXT_PUBLIC_API_URL,
-// falling back to NEXT_PUBLIC_API_BASE, then "" (relative paths proxied by
-// Next rewrites). Trailing slashes are stripped so `${API_BASE}/api/...`
+// Known production backend (Railway). Used as a last-resort fallback in
+// production builds so the app never silently drops to demo mode when the
+// NEXT_PUBLIC_API_URL build-time var is missing/empty on Vercel.
+const PROD_API_FALLBACK = "https://recruitcraft.up.railway.app";
+
+// Absolute backend URL via NEXT_PUBLIC_API_URL, falling back to
+// NEXT_PUBLIC_API_BASE. Trailing slashes are stripped so `${API_BASE}/api/...`
 // never produces a double slash.
-export const API_BASE = (
-  process.env.NEXT_PUBLIC_API_URL ??
-  process.env.NEXT_PUBLIC_API_BASE ??
-  ""
-).replace(/\/+$/, "");
+//
+// Resolution order:
+//   1. NEXT_PUBLIC_API_URL / NEXT_PUBLIC_API_BASE (explicit, build-time inlined)
+//   2. production build with no explicit base → Railway backend (so prod is
+//      never stuck in demo mode if the Vercel env var didn't get inlined)
+//   3. otherwise "" → same-origin relative paths, proxied to localhost by
+//      next.config.mjs in development (keeps Codespaces dev working)
+export const API_BASE = (() => {
+  const explicit = (
+    process.env.NEXT_PUBLIC_API_URL ??
+    process.env.NEXT_PUBLIC_API_BASE ??
+    ""
+  ).replace(/\/+$/, "");
+  if (explicit) return explicit;
+  return process.env.NODE_ENV === "production" ? PROD_API_FALLBACK : "";
+})();
 
 /** Thrown when the backend can't serve a real response → use mock fallback. */
 export class DemoModeError extends Error {

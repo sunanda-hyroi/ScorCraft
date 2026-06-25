@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { supabase, TOKEN_KEY } from "@/lib/supabase";
+import { supabase } from "@/lib/supabase";
 
 // Branding
 const NAVY = "#1A2744";
@@ -11,36 +11,63 @@ const GOLD = "#C8963E";
 const INDIGO = "#4338CA";
 const BG = "#F7F8FA";
 
-export default function LoginPage() {
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+export default function SignupPage() {
   const router = useRouter();
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
   const [loading, setLoading] = useState(false);
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setSuccess("");
+
+    // ── Client-side validation ──────────────────────────────────
+    const fullName = name.trim();
+    const cleanEmail = email.trim();
+    if (!fullName) {
+      setError("Please enter your full name.");
+      return;
+    }
+    if (!EMAIL_RE.test(cleanEmail)) {
+      setError("Please enter a valid email address.");
+      return;
+    }
+    if (password.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (password !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim(),
+      // Store the full name as user metadata so the backend / dashboard can
+      // resolve a display name (mirrors displayNameFromToken / _display_name).
+      const { error: signUpError } = await supabase.auth.signUp({
+        email: cleanEmail,
         password,
+        options: { data: { full_name: fullName } },
       });
-      if (error) {
-        setError(error.message);
+      if (signUpError) {
+        setError(signUpError.message);
         return;
       }
-      const token = data.session?.access_token;
-      if (!token) {
-        setError("Login succeeded but no session was returned.");
-        return;
-      }
-      // api.ts reads the token from here on every authenticated call.
-      window.localStorage.setItem(TOKEN_KEY, token);
-      router.replace("/");
+      setSuccess(
+        "Account created successfully! Please check your email to verify, then log in."
+      );
+      // Redirect to login after 3 seconds.
+      setTimeout(() => router.replace("/login"), 3000);
     } catch (err) {
-      setError((err as Error)?.message || "Login failed.");
+      setError((err as Error)?.message || "Sign up failed.");
     } finally {
       setLoading(false);
     }
@@ -55,6 +82,13 @@ export default function LoginPage() {
     boxSizing: "border-box",
     outline: "none",
     fontFamily: "inherit",
+  };
+
+  const fieldLabel: React.CSSProperties = {
+    fontSize: 12,
+    fontWeight: 600,
+    color: "#6B7280",
+    marginBottom: 5,
   };
 
   return (
@@ -89,35 +123,53 @@ export default function LoginPage() {
             </span>
           </div>
           <div style={{ fontSize: 12, color: "rgba(255,255,255,0.6)", marginTop: 4 }}>
-            Sign in to continue
+            Create your account
           </div>
         </div>
 
         {/* Form */}
         <form onSubmit={onSubmit} style={{ padding: 24 }}>
           <div style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#6B7280", marginBottom: 5 }}>
-              Email
-            </div>
+            <div style={fieldLabel}>Full name</div>
+            <input
+              type="text"
+              required
+              autoFocus
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Jane Recruiter"
+              style={input}
+            />
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={fieldLabel}>Email</div>
             <input
               type="email"
               required
-              autoFocus
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@hyroi.com"
               style={input}
             />
           </div>
-          <div style={{ marginBottom: 18 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#6B7280", marginBottom: 5 }}>
-              Password
-            </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={fieldLabel}>Password</div>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              placeholder="At least 8 characters"
+              style={input}
+            />
+          </div>
+          <div style={{ marginBottom: 18 }}>
+            <div style={fieldLabel}>Confirm password</div>
+            <input
+              type="password"
+              required
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
               placeholder="••••••••"
               style={input}
             />
@@ -139,22 +191,38 @@ export default function LoginPage() {
             </div>
           )}
 
+          {success && (
+            <div
+              style={{
+                background: "#ECFDF5",
+                border: "1px solid #A7F3D0",
+                color: "#047857",
+                fontSize: 12,
+                borderRadius: 8,
+                padding: "8px 12px",
+                marginBottom: 14,
+              }}
+            >
+              {success}
+            </div>
+          )}
+
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !!success}
             style={{
               width: "100%",
               padding: "11px 16px",
-              background: loading ? "#9CA3AF" : INDIGO,
+              background: loading || success ? "#9CA3AF" : INDIGO,
               color: "#fff",
               border: "none",
               borderRadius: 8,
               fontSize: 14,
               fontWeight: 600,
-              cursor: loading ? "default" : "pointer",
+              cursor: loading || success ? "default" : "pointer",
             }}
           >
-            {loading ? "Signing in…" : "Sign in"}
+            {loading ? "Creating account…" : "Create account"}
           </button>
 
           <div
@@ -165,9 +233,9 @@ export default function LoginPage() {
               color: "#6B7280",
             }}
           >
-            Don&apos;t have an account?{" "}
-            <Link href="/signup" style={{ color: INDIGO, fontWeight: 600, textDecoration: "none" }}>
-              Create an account
+            Already have an account?{" "}
+            <Link href="/login" style={{ color: INDIGO, fontWeight: 600, textDecoration: "none" }}>
+              Log in
             </Link>
           </div>
         </form>
