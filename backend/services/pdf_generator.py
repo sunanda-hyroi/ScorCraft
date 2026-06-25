@@ -44,28 +44,37 @@ def _get_styles():
     """Shared styles for resume and scorecard."""
     styles = getSampleStyleSheet()
 
-    styles.add(ParagraphStyle("SectionHeading", fontName="Helvetica-Bold", fontSize=11,
-        textColor=NAVY, spaceBefore=10, spaceAfter=4))
-    styles.add(ParagraphStyle("Body", fontName="Helvetica", fontSize=9,
-        textColor=DARK, leading=13, spaceAfter=2))
-    styles.add(ParagraphStyle("Bullet", fontName="Helvetica", fontSize=9,
-        textColor=DARK, leading=13, leftIndent=12, spaceAfter=1))
-    styles.add(ParagraphStyle("CompanyHeader", fontName="Helvetica-Bold", fontSize=10,
-        textColor=DARK, spaceBefore=6, spaceAfter=1))
-    styles.add(ParagraphStyle("ProjectHeader", fontName="Helvetica-Bold", fontSize=9,
-        textColor=LIGHT_NAVY, leftIndent=12, spaceBefore=3, spaceAfter=1))
-    styles.add(ParagraphStyle("SmallGray", fontName="Helvetica", fontSize=8,
-        textColor=GRAY))
-    styles.add(ParagraphStyle("NameStyle", fontName="Helvetica-Bold", fontSize=16,
-        textColor=WHITE, leading=20))
-    styles.add(ParagraphStyle("ContactStyle", fontName="Helvetica", fontSize=9,
-        textColor=colors.HexColor("#B0C4DE")))
-    styles.add(ParagraphStyle("ScorecardTitle", fontName="Helvetica-Bold", fontSize=12,
-        textColor=NAVY, spaceBefore=6, spaceAfter=4))
-    styles.add(ParagraphStyle("ScoreLabel", fontName="Helvetica-Bold", fontSize=9,
-        textColor=NAVY))
-    styles.add(ParagraphStyle("Reasoning", fontName="Helvetica", fontSize=9,
-        textColor=DARK, leading=13, spaceAfter=4))
+    def define(name, **kw):
+        # Overwrite instead of .add(): reportlab's sample stylesheet already
+        # ships some of these names (e.g. "Bullet"), and .add() raises
+        # KeyError("Style '...' already defined") on a collision — which was
+        # crashing every PDF download.
+        if name in styles.byName:
+            del styles.byName[name]
+        styles.add(ParagraphStyle(name, **kw))
+
+    define("SectionHeading", fontName="Helvetica-Bold", fontSize=11,
+        textColor=NAVY, spaceBefore=10, spaceAfter=4)
+    define("Body", fontName="Helvetica", fontSize=9,
+        textColor=DARK, leading=13, spaceAfter=2)
+    define("Bullet", fontName="Helvetica", fontSize=9,
+        textColor=DARK, leading=13, leftIndent=12, spaceAfter=1)
+    define("CompanyHeader", fontName="Helvetica-Bold", fontSize=10,
+        textColor=DARK, spaceBefore=6, spaceAfter=1)
+    define("ProjectHeader", fontName="Helvetica-Bold", fontSize=9,
+        textColor=LIGHT_NAVY, leftIndent=12, spaceBefore=3, spaceAfter=1)
+    define("SmallGray", fontName="Helvetica", fontSize=8,
+        textColor=GRAY)
+    define("NameStyle", fontName="Helvetica-Bold", fontSize=16,
+        textColor=WHITE, leading=20)
+    define("ContactStyle", fontName="Helvetica", fontSize=9,
+        textColor=colors.HexColor("#B0C4DE"))
+    define("ScorecardTitle", fontName="Helvetica-Bold", fontSize=12,
+        textColor=NAVY, spaceBefore=6, spaceAfter=4)
+    define("ScoreLabel", fontName="Helvetica-Bold", fontSize=9,
+        textColor=NAVY)
+    define("Reasoning", fontName="Helvetica", fontSize=9,
+        textColor=DARK, leading=13, spaceAfter=4)
 
     return styles
 

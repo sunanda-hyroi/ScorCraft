@@ -134,3 +134,27 @@ async def health():
         "supabase": supabase_ok,
         "openai": openai_ok,
     }
+
+
+# ── Debug endpoints ──────────────────────────────────────────
+# Defined directly on the app (no router) so there's no include_router
+# ordering/import issue. Used to isolate generator failures in prod.
+@app.get("/api/v1/debug/test-pdf")
+async def test_pdf():
+    try:
+        from services.pdf_generator import generate_resume_pdf
+        test_data = {
+            "candidate_info": {"full_name": "Test User", "email": "test@test.com"},
+            "executive_summary": ["Test bullet point"],
+            "core_competencies": [],
+            "employment_history": [],
+            "education": [],
+            "certifications": [],
+            "technical_competencies": {},
+        }
+        pdf_bytes = generate_resume_pdf(test_data)
+        from fastapi.responses import Response
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except Exception as e:
+        import traceback
+        return {"error": str(e), "traceback": traceback.format_exc()}
