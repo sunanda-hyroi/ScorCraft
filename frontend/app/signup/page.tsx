@@ -61,11 +61,10 @@ export default function SignupPage() {
         setError(signUpError.message);
         return;
       }
-      setSuccess(
-        "Account created successfully! Please check your email to verify, then log in."
-      );
-      // Redirect to login after 3 seconds.
-      setTimeout(() => router.replace("/login"), 3000);
+      setSuccess("Account created successfully! Redirecting to login...");
+      // Email confirmation is disabled, so the account is ready immediately.
+      // Redirect to login after 2 seconds.
+      setTimeout(() => router.replace("/login"), 2000);
     } catch (err) {
       setError((err as Error)?.message || "Sign up failed.");
     } finally {
