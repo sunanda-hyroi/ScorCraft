@@ -54,7 +54,27 @@ def _get_user(authorization: Optional[str]) -> str:
 
 # ── Core craft logic ─────────────────────────────────────────
 
-async def _craft_single(score_id: str, craft_settings: CraftSettings) -> dict:
+def _resolve_logo_path(craft_settings: CraftSettings, user_id: Optional[str]) -> None:
+    """Belt-and-suspenders: the company logo is uploaded by the Craft Settings UI
+    to a deterministic path (logos/{user_id}_logo.png) in the formatted-resumes
+    bucket. The frontend is supposed to pass that path in craft_settings, but its
+    logoPath state is ephemeral and resets on reload — so crafts could land with
+    logo_storage_path=null and silently lose the logo in downloads. If the path
+    is missing but a logo file exists in storage for this user, backfill it here
+    so the logo survives regardless of frontend state. Mutates craft_settings."""
+    if craft_settings.logo_storage_path or not user_id:
+        return
+    name = f"{user_id}_logo.png"
+    try:
+        files = supabase.storage.from_(settings.FORMATTED_BUCKET).list("logos")
+        if any(f.get("name") == name for f in (files or [])):
+            craft_settings.logo_storage_path = f"logos/{name}"
+            logger.info("Backfilled logo_storage_path for user %s from storage", user_id)
+    except Exception as e:
+        logger.info("Logo path backfill skipped for user %s (%s)", user_id, e)
+
+
+async def _craft_single(score_id: str, craft_settings: CraftSettings, user_id: Optional[str] = None) -> dict:
     """
     Craft a single scored resume:
     1. Fetch score + raw resume text from DB
@@ -121,6 +141,9 @@ async def _craft_single(score_id: str, craft_settings: CraftSettings) -> dict:
 
     structured_data = ai_result["data"]
     missing_report = ai_result.get("missing_report", {})
+
+    # 3b. Backfill the logo path from storage if the frontend didn't send it.
+    _resolve_logo_path(craft_settings, user_id)
 
     # 4. Apply PI masking if requested
     if craft_settings.mask_pi:
@@ -198,8 +221,8 @@ async def craft_single(
     authorization: Optional[str] = Header(None),
 ):
     """Craft a single scored resume."""
-    _get_user(authorization)
-    return await _craft_single(request.score_id, request.settings)
+    user_id = _get_user(authorization)
+    return await _craft_single(request.score_id, request.settings, user_id)
 
 
 @router.post("/batch")
@@ -208,14 +231,14 @@ async def craft_batch(
     authorization: Optional[str] = Header(None),
 ):
     """Batch-craft multiple scored resumes."""
-    _get_user(authorization)
+    user_id = _get_user(authorization)
 
     results = []
     errors = []
 
     for score_id in request.score_ids:
         try:
-            result = await _craft_single(score_id, request.settings)
+            result = await _craft_single(score_id, request.settings, user_id)
             results.append(result)
         except Exception as e:
             errors.append({"score_id": score_id, "error": str(e)})

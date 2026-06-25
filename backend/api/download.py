@@ -50,13 +50,20 @@ def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
     can't be fetched, return None so the footer renders company text only — a
     missing logo must never break a download."""
     if not logo_path:
+        logger.info("Logo fetch: craft_settings has no logo_storage_path — rendering without logo")
         return None
     try:
         content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(logo_path)
+        if content:
+            logger.info("Logo fetch: '%s' from bucket '%s' OK (%d bytes)",
+                        logo_path, settings.FORMATTED_BUCKET, len(content))
+        else:
+            logger.warning("Logo fetch: '%s' from bucket '%s' returned empty — rendering without logo",
+                           logo_path, settings.FORMATTED_BUCKET)
         return content or None
     except Exception as e:
-        logger.info("Logo '%s' not found in bucket '%s' (%s) — footer renders without it",
-                    logo_path, settings.FORMATTED_BUCKET, e)
+        logger.warning("Logo fetch: '%s' not found in bucket '%s' (%s) — rendering without logo",
+                       logo_path, settings.FORMATTED_BUCKET, e)
         return None
 
 

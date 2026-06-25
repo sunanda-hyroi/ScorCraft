@@ -422,6 +422,33 @@ export default function ScorCraft(){
     router.replace("/login");
   },[router]);
 
+  // ── Rehydrate the previously-uploaded company logo ────────────
+  // logoPath is ephemeral React state, but the logo file lives permanently in
+  // storage at the deterministic path logos/{uid}_logo.png. Without this, a
+  // page reload (or any fresh craft session where the user doesn't re-upload)
+  // would craft with logo_storage_path=null — which is exactly why downloaded
+  // PDFs were losing the logo. On mount, re-derive logoPath (+ a preview URL)
+  // so the logo is sent on every craft once it has ever been uploaded.
+  useEffect(()=>{
+    let cancelled=false;
+    (async()=>{
+      try{
+        const {data:{session}}=await supabase.auth.getSession();
+        const uid=session?.user?.id;
+        if(!uid)return;
+        const name=`${uid}_logo.png`;
+        const {data:files}=await supabase.storage.from("formatted-resumes").list("logos",{search:name});
+        if(cancelled||!files?.some(f=>f.name===name))return;
+        const path=`logos/${name}`;
+        setLogoPath(path);
+        const {data:signed}=await supabase.storage.from("formatted-resumes").createSignedUrl(path,3600);
+        if(!cancelled&&signed?.signedUrl)setLogoUrl(signed.signedUrl);
+        console.log("[ScorCraft] rehydrated existing logo:",path);
+      }catch(err){console.warn("[ScorCraft] logo rehydrate skipped:",err);}
+    })();
+    return()=>{cancelled=true;};
+  },[]);
+
   // ── Create / edit / duplicate job flow (ported ScorQ JobCreator) ──
   const[showCreateJob,setShowCreateJob]=useState(false);
   const[editingJob,setEditingJob]=useState(null);     // job being edited
@@ -659,7 +686,8 @@ export default function ScorCraft(){
       const uid=session?.user?.id;
       if(!uid){console.warn("No session — logo not uploaded (preview only)");return;}
       const path=`logos/${uid}_logo.png`;
-      const {error}=await supabase.storage.from("formatted-resumes").upload(path,file,{upsert:true,contentType:file.type||"image/png"});
+      const {data,error}=await supabase.storage.from("formatted-resumes").upload(path,file,{upsert:true,contentType:file.type||"image/png"});
+      console.log("[ScorCraft] logo upload result:",{path,data,error});
       if(error){console.warn("Logo upload failed:",error.message);return;}
       setLogoPath(path);
     }catch(err){console.warn("Logo upload error:",err);}
