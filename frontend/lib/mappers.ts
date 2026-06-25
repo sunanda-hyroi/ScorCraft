@@ -184,10 +184,11 @@ export function candidateToStructured(c: any): Record<string, unknown> {
   };
 }
 
-/** Build CraftSettings from the UI letterhead + maskPI toggle. */
+/** Build CraftSettings from the UI letterhead + maskPI toggle + logo path. */
 export function craftSettingsFrom(
   letterhead: { company?: string; tagline?: string; email?: string; phone?: string },
-  maskPI: boolean
+  maskPI: boolean,
+  logoStoragePath?: string | null
 ) {
   return {
     mask_pi: maskPI,
@@ -195,5 +196,6 @@ export function craftSettingsFrom(
     company_tagline: letterhead.tagline,
     company_email: letterhead.email,
     company_phone: letterhead.phone,
+    ...(logoStoragePath ? { logo_storage_path: logoStoragePath } : {}),
   };
 }

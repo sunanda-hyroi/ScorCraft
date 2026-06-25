@@ -496,7 +496,7 @@ def _build_resume_story(styles, data, mask_contacts):
                 rows.append([
                     cert.get("name", ""),
                     cert.get("issuer", "—"),
-                    cert.get("expiry") or "⚠ Not specified",
+                    cert.get("expiry") or "(!) Not specified",
                 ])
         story.append(_table_from_rows(
             ["Certification", "Issuer", "Expiry"], rows,
@@ -546,12 +546,13 @@ def generate_resume_pdf(
 # 2. SCORECARD PDF (matches the UI scorecard design)
 # ═════════════════════════════════════════════════════════════
 
-# Category → (label, UI accent color)
+# Category → (label, score key, accent color used for the indicator square,
+# the score %, and the progress bar). Mirrors the UI accent colors.
 _CAT_CONFIG = [
     ("Technical", "technical", BLUE),
     ("Experience", "experience", GREEN),
     ("Education", "education", PURPLE),
-    ("Stability", "stability", TEAL),
+    ("Stability", "stability", ORANGE),
 ]
 
 
@@ -637,14 +638,14 @@ def _build_scorecard_story(
             textColor=NAVY, leading=22)))
     contact_parts = []
     if candidate_email:
-        contact_parts.append(f"✉ {candidate_email}")
+        contact_parts.append(f"Email: {candidate_email}")
     if candidate_phone:
-        contact_parts.append(f"☎ {candidate_phone}")
+        contact_parts.append(f"Phone: {candidate_phone}")
     if job_title:
         contact_parts.append(f"Role: {job_title}")
     if contact_parts:
         story.append(Paragraph(
-            "&nbsp;&nbsp;&nbsp;".join(contact_parts),
+            "&nbsp;&nbsp;&middot;&nbsp;&nbsp;".join(contact_parts),
             ParagraphStyle("Contact", fontName="Helvetica", fontSize=9,
                 textColor=GRAY, leading=13)))
     story.append(Spacer(1, 10))
@@ -743,7 +744,7 @@ def _build_scorecard_story(
     if highlights:
         story.append(Paragraph("HIGHLIGHTS", styles["SectionHeading"]))
         for h in highlights[:6]:
-            story.append(Paragraph(f"▸ {h}", styles["Bullet"]))
+            story.append(Paragraph(f"• {h}", styles["Bullet"]))
         story.append(Spacer(1, 6))
 
     # ── AI Assessment (amber box) ────────────────────────────

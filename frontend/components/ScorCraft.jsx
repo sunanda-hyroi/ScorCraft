@@ -391,7 +391,8 @@ export default function ScorCraft(){
   const[scoringProgress,setScoringProgress]=useState(0);
   const[maskPI,setMaskPI]=useState(false);
   const[letterhead,setLetterhead]=useState({company:"HYROI Solutions",tagline:"Talent Acquisition & Recruitment",email:"recruit@hyroi.com",phone:"+91 9100000000"});
-  const[logoUrl,setLogoUrl]=useState(null);
+  const[logoUrl,setLogoUrl]=useState(null);       // data URL, for preview
+  const[logoPath,setLogoPath]=useState(null);     // Supabase storage path, for PDFs
   const[showSettings,setShowSettings]=useState(false);
   const logoRef=useRef(null);
 
@@ -569,7 +570,7 @@ export default function ScorCraft(){
   },[demoMode,jobIdForScoring,uploadFileObjs,fallbackToDemo]);
 
   // ── Craft handlers ────────────────────────────────────────────
-  const craftSettings=()=>craftSettingsFrom(letterhead,maskPI);
+  const craftSettings=()=>craftSettingsFrom(letterhead,maskPI,logoPath);
 
   const craftOne=useCallback(async(cand)=>{
     // Live: call API if we have a real score id; else just mark crafted (demo).
@@ -584,7 +585,7 @@ export default function ScorCraft(){
       }catch(e){fallbackToDemo(e);setBusy("");}
     }
     setCraftQueue(p=>p.map(x=>x.id===cand.id?{...x,crafted:true}:x));
-  },[demoMode,letterhead,maskPI,fallbackToDemo]);
+  },[demoMode,letterhead,maskPI,logoPath,fallbackToDemo]);
 
   const craftAll=useCallback(async()=>{
     const ids=craftQueue.filter(c=>c.scoreId&&!c.crafted).map(c=>c.scoreId);
@@ -599,7 +600,7 @@ export default function ScorCraft(){
       }catch(e){fallbackToDemo(e);setBusy("");}
     }
     setCraftQueue(p=>p.map(c=>({...c,crafted:true})));
-  },[craftQueue,demoMode,letterhead,maskPI,fallbackToDemo]);
+  },[craftQueue,demoMode,letterhead,maskPI,logoPath,fallbackToDemo]);
 
   // ── Editor save ───────────────────────────────────────────────
   const saveEdited=useCallback(async(cand)=>{
@@ -634,9 +635,22 @@ export default function ScorCraft(){
   const toggleSelect=id=>{setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});};
   const selectAll=()=>{const ids=new Set(filtered.map(c=>c.id));setSelected(filtered.every(c=>selected.has(c.id))?new Set():ids);};
 
-  const handleLogo=(e)=>{
+  const handleLogo=async(e)=>{
     const file=e.target.files?.[0];
-    if(file){const reader=new FileReader();reader.onload=ev=>setLogoUrl(ev.target.result);reader.readAsDataURL(file);}
+    if(!file)return;
+    // Local preview.
+    const reader=new FileReader();reader.onload=ev=>setLogoUrl(ev.target.result);reader.readAsDataURL(file);
+    // Upload to Supabase storage so the backend can embed it in PDF footers.
+    // Path: logos/{user_id}_logo.png in the existing formatted-resumes bucket.
+    try{
+      const {data:{session}}=await supabase.auth.getSession();
+      const uid=session?.user?.id;
+      if(!uid){console.warn("No session — logo not uploaded (preview only)");return;}
+      const path=`logos/${uid}_logo.png`;
+      const {error}=await supabase.storage.from("formatted-resumes").upload(path,file,{upsert:true,contentType:file.type||"image/png"});
+      if(error){console.warn("Logo upload failed:",error.message);return;}
+      setLogoPath(path);
+    }catch(err){console.warn("Logo upload error:",err);}
   };
 
   const steps=[{key:"job",label:"Select job"},{key:"upload",label:"Upload resumes"},{key:"scoring",label:"Scoring"},{key:"results",label:"Review & filter"},{key:"craft",label:"Craft resumes"}];
@@ -797,7 +811,7 @@ export default function ScorCraft(){
                   <div>300×80px min · 3:1 to 5:1 ratio</div>
                   <div>Transparent background · Max 2MB</div>
                 </div>
-                {logoUrl&&<button style={{fontSize:11,color:"#DC2626",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}} onClick={()=>setLogoUrl(null)}>Remove</button>}
+                {logoUrl&&<button style={{fontSize:11,color:"#DC2626",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}} onClick={()=>{setLogoUrl(null);setLogoPath(null);}}>Remove</button>}
               </div>
             </div>
           </div>

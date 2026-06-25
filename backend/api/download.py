@@ -44,25 +44,20 @@ def _get_user(authorization: Optional[str]) -> str:
 
 
 def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
-    """Best-effort: download an uploaded logo from storage for the footer.
-    The logo bucket isn't fixed, so try the known buckets and give up quietly
-    — a missing logo must never break a download."""
+    """Download the user's uploaded logo for the PDF footer. The logo lives in
+    the formatted-resumes bucket (path: logos/{user_id}_logo.png), saved there
+    by the Craft Settings UI. If no logo was uploaded (logo_path is null) or it
+    can't be fetched, return None so the footer renders company text only — a
+    missing logo must never break a download."""
     if not logo_path:
         return None
-    buckets = [
-        settings.FORMATTED_BUCKET,
-        getattr(settings, "ORIGINAL_BUCKET", None),
-        getattr(settings, "RESUME_STORAGE_BUCKET", None),
-    ]
-    for bucket in [b for b in buckets if b]:
-        try:
-            content = supabase.storage.from_(bucket).download(logo_path)
-            if content:
-                return content
-        except Exception:
-            continue
-    logger.info("Logo '%s' not found in any known bucket — footer renders without it", logo_path)
-    return None
+    try:
+        content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(logo_path)
+        return content or None
+    except Exception as e:
+        logger.info("Logo '%s' not found in bucket '%s' (%s) — footer renders without it",
+                    logo_path, settings.FORMATTED_BUCKET, e)
+        return None
 
 
 def _company_kwargs(craft_settings: dict) -> dict:
