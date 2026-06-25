@@ -61,12 +61,11 @@ def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
 
 
 def _company_kwargs(craft_settings: dict) -> dict:
-    """Footer/company params shared by resume + combined PDFs."""
+    """Footer/company params shared by resume + combined PDFs. The footer shows
+    company name + tagline only (email/phone are not in the PDF footer)."""
     return {
         "company_name": craft_settings.get("company_name", "HYROI Solutions"),
         "company_tagline": craft_settings.get("company_tagline"),
-        "company_email": craft_settings.get("company_email"),
-        "company_phone": craft_settings.get("company_phone"),
         "logo_path": _fetch_logo_bytes(craft_settings.get("logo_storage_path")),
     }
 
