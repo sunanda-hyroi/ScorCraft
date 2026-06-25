@@ -245,8 +245,6 @@ def _brand_banner(styles, logo, company_name, company_tagline):
       • company name + tagline at the right (navy, right-aligned, 9pt)
     Renders even without a logo (text-only). Returns a single Table flowable."""
     logo_img = _logo_flowable(logo, max_h=_BANNER_LOGO_H, max_w=_BANNER_LEFT_W - 16)
-    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
-    print(f"[LOGO DEBUG] banner logo_flowable created: {logo_img is not None}", flush=True)
 
     name = company_name or "HYROI Solutions"
     text = f'<font size="9" color="{_hex(NAVY)}"><b>{name}</b></font>'
@@ -644,9 +642,6 @@ def generate_resume_pdf(
     company_tagline: str = None,
 ) -> bytes:
     """Generate formatted resume as PDF (branded banner on page 1, CONFIDENTIAL footer)."""
-    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
-    print(f"[LOGO DEBUG] PDF generator (resume) received logo_path type: {type(logo_path).__name__}", flush=True)
-    print(f"[LOGO DEBUG] logo_bytes length: {len(logo_path) if logo_path else 0}", flush=True)
     styles = _get_styles()
     story = _build_resume_story(styles, data, mask_contacts, logo=logo_path,
                                 company_name=company_name, company_tagline=company_tagline)
@@ -972,9 +967,6 @@ def generate_combined_pdf(
     company_tagline: str = None,
 ) -> bytes:
     """Combined PDF: crafted resume pages followed by the one-page scorecard."""
-    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
-    print(f"[LOGO DEBUG] PDF generator (combined) received logo_path type: {type(logo_path).__name__}", flush=True)
-    print(f"[LOGO DEBUG] logo_bytes length: {len(logo_path) if logo_path else 0}", flush=True)
     styles = _get_styles()
 
     story = _build_resume_story(styles, resume_data, mask_contacts, logo=logo_path,
