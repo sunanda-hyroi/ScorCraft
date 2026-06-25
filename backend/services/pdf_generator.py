@@ -204,9 +204,10 @@ def _load_image(logo):
     return None
 
 
-def _logo_flowable(logo, max_h=40):
-    """A top-of-page logo Image scaled to `max_h` points, aspect preserved.
-    Returns None when no/invalid logo so no blank space is left."""
+def _logo_flowable(logo, max_h=40, max_w=None):
+    """A logo Image scaled to fit within `max_h` points tall (and `max_w` wide
+    when given), aspect preserved. Returns None when no/invalid logo so no blank
+    space is left."""
     reader = _load_image(logo)
     if reader is None:
         return None
@@ -218,8 +219,9 @@ def _logo_flowable(logo, max_h=40):
         return None
     h = float(max_h)
     w = iw * (h / ih)
-    if w > CONTENT_W:                      # never wider than the page body
-        w = CONTENT_W
+    cap_w = min(CONTENT_W, max_w) if max_w else CONTENT_W
+    if w > cap_w:                          # clamp width (cell / page body)
+        w = cap_w
         h = ih * (w / iw)
     src = io.BytesIO(logo) if isinstance(logo, (bytes, bytearray)) else logo
     try:
@@ -228,6 +230,50 @@ def _logo_flowable(logo, max_h=40):
         return None
     img.hAlign = "LEFT"
     return img
+
+
+# Banner geometry: a thin branded strip on the first page only.
+_BANNER_H = 1.5 * cm        # overall strip height
+_BANNER_LOGO_H = 30         # max logo height (points ≈ px), aspect preserved
+_BANNER_LEFT_W = 6 * cm     # left column reserved for the logo
+
+
+def _brand_banner(styles, logo, company_name, company_tagline):
+    """Thin branded banner strip for the FIRST page only:
+      • light-gray (#F8FAFC) background, thin gold (#C8963E) bottom border
+      • company logo at the left (max 30px tall, aspect preserved)
+      • company name + tagline at the right (navy, right-aligned, 9pt)
+    Renders even without a logo (text-only). Returns a single Table flowable."""
+    logo_img = _logo_flowable(logo, max_h=_BANNER_LOGO_H, max_w=_BANNER_LEFT_W - 16)
+    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
+    print(f"[LOGO DEBUG] banner logo_flowable created: {logo_img is not None}", flush=True)
+
+    name = company_name or "HYROI Solutions"
+    text = f'<font size="9" color="{_hex(NAVY)}"><b>{name}</b></font>'
+    if company_tagline:
+        text += f'<br/><font size="8" color="{_hex(NAVY)}">{company_tagline}</font>'
+    right_para = Paragraph(text, ParagraphStyle(
+        "BannerRight", parent=styles["Body"], alignment=TA_RIGHT,
+        textColor=NAVY, fontSize=9, leading=11))
+
+    left_cell = logo_img if logo_img is not None else ""
+    banner = Table([[left_cell, right_para]],
+                   colWidths=[_BANNER_LEFT_W, CONTENT_W - _BANNER_LEFT_W],
+                   rowHeights=[_BANNER_H])
+    banner.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), CARD_BG),       # #F8FAFC
+        ("LINEBELOW", (0, 0), (-1, -1), 1, GOLD),        # thin gold bottom rule
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (0, 0), "LEFT"),
+        ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+        ("LEFTPADDING", (0, 0), (0, 0), 8),
+        ("RIGHTPADDING", (-1, 0), (-1, 0), 8),
+        ("LEFTPADDING", (1, 0), (1, 0), 4),
+        ("RIGHTPADDING", (0, 0), (0, 0), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    return banner
 
 
 def _truncate(text, max_chars):
@@ -376,10 +422,11 @@ def _footer_canvas(footer):
 
 def _company_footer(company_name, tagline=None):
     """Footer for resume / combined PDFs:
-    left = company name + tagline, center = CONFIDENTIAL, right = date + page."""
+    left = company name, center = CONFIDENTIAL, right = date + Page X of Y.
+    (The tagline now lives in the first-page banner, so it's omitted here.)"""
     return {
         "left_title": company_name or "HYROI Solutions",
-        "left_sub": tagline or "",
+        "left_sub": "",
         "center": "CONFIDENTIAL",
         "show_page": True,
     }
@@ -433,16 +480,17 @@ def _table_from_rows(headers, rows, col_widths, styles, header_font=9, cell_font
     return t
 
 
-def _build_resume_story(styles, data, mask_contacts, logo=None):
+def _build_resume_story(styles, data, mask_contacts, logo=None,
+                        company_name="HYROI Solutions", company_tagline=None):
     """Resume flowables. All tables wrap; nothing overflows."""
     story = []
     candidate = data.get("candidate_info", {}) or {}
 
-    # ── Company logo at the very top (above the name header) ──
-    logo_flow = _logo_flowable(logo)
-    if logo_flow is not None:
-        story.append(logo_flow)
-        story.append(Spacer(1, 6))
+    # ── Branded banner strip (first page only; logo left, company right) ──
+    # As the first flowable, it renders only at the top of page 1; the navy
+    # candidate header follows directly below.
+    story.append(_brand_banner(styles, logo, company_name, company_tagline))
+    story.append(Spacer(1, 6))
 
     # ── Header (navy bar) ────────────────────────────────────
     contact_parts = []
@@ -595,9 +643,13 @@ def generate_resume_pdf(
     logo_path=None,
     company_tagline: str = None,
 ) -> bytes:
-    """Generate formatted resume as PDF (logo at top, CONFIDENTIAL footer)."""
+    """Generate formatted resume as PDF (branded banner on page 1, CONFIDENTIAL footer)."""
+    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
+    print(f"[LOGO DEBUG] PDF generator (resume) received logo_path type: {type(logo_path).__name__}", flush=True)
+    print(f"[LOGO DEBUG] logo_bytes length: {len(logo_path) if logo_path else 0}", flush=True)
     styles = _get_styles()
-    story = _build_resume_story(styles, data, mask_contacts, logo=logo_path)
+    story = _build_resume_story(styles, data, mask_contacts, logo=logo_path,
+                                company_name=company_name, company_tagline=company_tagline)
     return _render(story, _company_footer(company_name, company_tagline))
 
 
@@ -920,9 +972,13 @@ def generate_combined_pdf(
     company_tagline: str = None,
 ) -> bytes:
     """Combined PDF: crafted resume pages followed by the one-page scorecard."""
+    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
+    print(f"[LOGO DEBUG] PDF generator (combined) received logo_path type: {type(logo_path).__name__}", flush=True)
+    print(f"[LOGO DEBUG] logo_bytes length: {len(logo_path) if logo_path else 0}", flush=True)
     styles = _get_styles()
 
-    story = _build_resume_story(styles, resume_data, mask_contacts, logo=logo_path)
+    story = _build_resume_story(styles, resume_data, mask_contacts, logo=logo_path,
+                                company_name=company_name, company_tagline=company_tagline)
     story.append(PageBreak())
     story.extend(_build_scorecard_story(
         styles, candidate_name, candidate_email, candidate_phone,

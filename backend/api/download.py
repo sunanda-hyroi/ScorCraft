@@ -49,11 +49,16 @@ def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
     by the Craft Settings UI. If no logo was uploaded (logo_path is null) or it
     can't be fetched, return None so the footer renders company text only — a
     missing logo must never break a download."""
+    # [LOGO DEBUG] — temporary tracing; remove after confirming in production.
+    print(f"[LOGO DEBUG] _fetch_logo_bytes called with path: {logo_path!r}", flush=True)
     if not logo_path:
+        print("[LOGO DEBUG] download result - bytes: 0, error: none (no logo_storage_path)", flush=True)
         logger.info("Logo fetch: craft_settings has no logo_storage_path — rendering without logo")
         return None
     try:
         content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(logo_path)
+        print(f"[LOGO DEBUG] download result - bucket: {settings.FORMATTED_BUCKET!r}, "
+              f"bytes: {len(content) if content else 0}, error: none", flush=True)
         if content:
             logger.info("Logo fetch: '%s' from bucket '%s' OK (%d bytes)",
                         logo_path, settings.FORMATTED_BUCKET, len(content))
@@ -62,9 +67,20 @@ def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
                            logo_path, settings.FORMATTED_BUCKET)
         return content or None
     except Exception as e:
+        print(f"[LOGO DEBUG] download result - bucket: {settings.FORMATTED_BUCKET!r}, "
+              f"bytes: 0, error: {e}", flush=True)
         logger.warning("Logo fetch: '%s' not found in bucket '%s' (%s) — rendering without logo",
                        logo_path, settings.FORMATTED_BUCKET, e)
         return None
+
+
+def _debug_log_craft_settings(craft: dict, endpoint: str) -> None:
+    """[LOGO DEBUG] — temporary tracing of the logo chain; remove after
+    confirming in production."""
+    cs = craft.get("craft_settings", {}) or {}
+    print(f"[LOGO DEBUG] ({endpoint}) craft_settings raw: {cs}", flush=True)
+    print(f"[LOGO DEBUG] ({endpoint}) logo_storage_path value: "
+          f"{cs.get('logo_storage_path')}", flush=True)
 
 
 def _company_kwargs(craft_settings: dict) -> dict:
@@ -245,6 +261,7 @@ async def download_resume_pdf(
 
         structured_data = craft.get("structured_data") or {}
         craft_settings = craft.get("craft_settings") or {}
+        _debug_log_craft_settings(craft, "resume-pdf")
 
         pdf_bytes = generate_resume_pdf(
             data=structured_data,
@@ -282,6 +299,7 @@ async def download_scorecard_pdf(
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
         structured_data = craft.get("structured_data") or {}
+        _debug_log_craft_settings(craft, "scorecard-pdf")
         logo_path = _fetch_logo_bytes(craft_settings.get("logo_storage_path"))
 
         # Apply PI masking to scorecard if enabled
@@ -333,6 +351,7 @@ async def download_combined_pdf(
         structured_data = craft.get("structured_data") or {}
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
+        _debug_log_craft_settings(craft, "combined-pdf")
         mask = craft_settings.get("mask_pi", False)
 
         pdf_bytes = generate_combined_pdf(
