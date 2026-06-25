@@ -988,19 +988,25 @@ export default function ScorCraft(){
   const renderDownloadModal=()=>{
     if(!downloadModal)return null;
     const c=downloadModal;
+    // Before crafting (Review & Filter stage) only the scorecard exists, so
+    // offer just the Scorecard PDF. The full set (resume PDF/DOCX, scorecard,
+    // combined) only appears in the Craft stage once a resume is crafted.
+    const preCraft=step==="results";
+    const allOptions=[
+      {icon:"📄",label:"Resume only",sub:"Formatted resume"+(maskPI?" (PI masked)":""),formats:["PDF","DOCX"]},
+      {icon:"📊",label:"Scorecard only",sub:"Full ScorQ scorecard with AI reasoning",formats:["PDF"]},
+      {icon:"📦",label:"Combined: Resume + Scorecard",sub:"Crafted resume followed by full scorecard as last page",formats:["PDF"]},
+    ];
+    const options=preCraft?allOptions.filter(o=>o.label==="Scorecard only"):allOptions;
     return(
       <div style={S.modal} onClick={()=>setDownloadModal(null)}>
         <div style={{...S.modalBox,maxWidth:460}} onClick={e=>e.stopPropagation()}>
           <div style={{padding:"14px 20px",borderBottom:"1px solid #E5E7EB"}}>
             <div style={{fontSize:15,fontWeight:700,color:NAVY}}>Download: {c.name}</div>
-            <div style={{fontSize:11,color:"#9CA3AF"}}>{maskPI?"PI will be masked in output":"PI included in output"}</div>
+            <div style={{fontSize:11,color:"#9CA3AF"}}>{preCraft?"Scorecard only — craft the resume to unlock resume & combined downloads":(maskPI?"PI will be masked in output":"PI included in output")}</div>
           </div>
           <div style={{padding:18}}>
-            {[
-              {icon:"📄",label:"Resume only",sub:"Formatted resume"+(maskPI?" (PI masked)":""),formats:["PDF","DOCX"]},
-              {icon:"📊",label:"Scorecard only",sub:"Full ScorQ scorecard with AI reasoning",formats:["PDF"]},
-              {icon:"📦",label:"Combined: Resume + Scorecard",sub:"Crafted resume followed by full scorecard as last page",formats:["PDF"]},
-            ].map(opt=>(
+            {options.map(opt=>(
               <div key={opt.label} style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:8,padding:12,marginBottom:8}}>
                 <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                   <span style={{fontSize:16}}>{opt.icon}</span>

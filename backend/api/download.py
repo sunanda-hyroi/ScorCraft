@@ -43,6 +43,39 @@ def _get_user(authorization: Optional[str]) -> str:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
+    """Best-effort: download an uploaded logo from storage for the footer.
+    The logo bucket isn't fixed, so try the known buckets and give up quietly
+    — a missing logo must never break a download."""
+    if not logo_path:
+        return None
+    buckets = [
+        settings.FORMATTED_BUCKET,
+        getattr(settings, "ORIGINAL_BUCKET", None),
+        getattr(settings, "RESUME_STORAGE_BUCKET", None),
+    ]
+    for bucket in [b for b in buckets if b]:
+        try:
+            content = supabase.storage.from_(bucket).download(logo_path)
+            if content:
+                return content
+        except Exception:
+            continue
+    logger.info("Logo '%s' not found in any known bucket — footer renders without it", logo_path)
+    return None
+
+
+def _company_kwargs(craft_settings: dict) -> dict:
+    """Footer/company params shared by resume + combined PDFs."""
+    return {
+        "company_name": craft_settings.get("company_name", "HYROI Solutions"),
+        "company_tagline": craft_settings.get("company_tagline"),
+        "company_email": craft_settings.get("company_email"),
+        "company_phone": craft_settings.get("company_phone"),
+        "logo_path": _fetch_logo_bytes(craft_settings.get("logo_storage_path")),
+    }
+
+
 def _fetch_craft_and_score(craft_id: str) -> tuple:
     """Fetch crafted resume and its associated score data."""
     craft_res = supabase.table("crafted_resumes").select("*").eq("id", craft_id).execute()
@@ -151,13 +184,11 @@ async def download_resume_pdf(
 
         structured_data = craft.get("structured_data") or {}
         craft_settings = craft.get("craft_settings") or {}
-        logo_path = craft_settings.get("logo_storage_path")
 
         pdf_bytes = generate_resume_pdf(
             data=structured_data,
-            company_name=craft_settings.get("company_name", "HYROI Solutions"),
             mask_contacts=craft_settings.get("mask_pi", False),
-            logo_path=logo_path,
+            **_company_kwargs(craft_settings),
         )
 
         candidate_info = structured_data.get("candidate_info") or {}
@@ -189,7 +220,8 @@ async def download_scorecard_pdf(
 
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
-        logo_path = craft_settings.get("logo_storage_path")
+        structured_data = craft.get("structured_data") or {}
+        logo_path = _fetch_logo_bytes(craft_settings.get("logo_storage_path"))
 
         # Apply PI masking to scorecard if enabled
         mask = craft_settings.get("mask_pi", False)
@@ -207,6 +239,7 @@ async def download_scorecard_pdf(
             ai_reasoning=score.get("ai_reasoning", ""),
             job_title=job.get("title", ""),
             logo_path=logo_path,
+            certifications=structured_data.get("certifications"),
         )
 
         safe_name = (candidate.get("name") or "scorecard").encode("ascii", "ignore").decode("ascii").strip() or "scorecard"
@@ -240,12 +273,10 @@ async def download_combined_pdf(
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
         mask = craft_settings.get("mask_pi", False)
-        logo_path = craft_settings.get("logo_storage_path")
 
         pdf_bytes = generate_combined_pdf(
             # Resume data
             resume_data=structured_data,
-            company_name=craft_settings.get("company_name", "HYROI Solutions"),
             mask_contacts=mask,
             # Scorecard data
             candidate_name=candidate.get("name", "Unknown"),
@@ -259,7 +290,7 @@ async def download_combined_pdf(
             red_flags=score.get("red_flags", []),
             ai_reasoning=score.get("ai_reasoning", ""),
             job_title=job.get("title", ""),
-            logo_path=logo_path,
+            **_company_kwargs(craft_settings),
         )
 
         safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
