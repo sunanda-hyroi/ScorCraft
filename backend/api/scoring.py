@@ -12,6 +12,27 @@ from config import settings
 
 router = APIRouter(prefix="/api/v1/scoring", tags=["scoring"])
 
+# Upload guards — keep in sync with the frontend dropzone validation.
+ALLOWED_EXTENSIONS = (".pdf", ".docx")
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+_UNSUPPORTED_MSG = "Unsupported file format. Please upload a PDF or DOCX file."
+_TOO_LARGE_MSG = "File too large. Maximum size is 10MB."
+_UNREADABLE_MSG = (
+    "Could not read this file. It may be corrupted or password-protected. "
+    "Please try a different file."
+)
+
+
+def _validate_upload(filename: str, content: bytes) -> Optional[str]:
+    """Return an error message if the upload is the wrong type or too large,
+    else None. Used to fail fast with a clear 400 instead of a 500 crash."""
+    name = (filename or "").lower()
+    if not name.endswith(ALLOWED_EXTENSIONS):
+        return _UNSUPPORTED_MSG
+    if len(content) > MAX_UPLOAD_BYTES:
+        return _TOO_LARGE_MSG
+    return None
+
 
 def _job_for_scoring(job: dict) -> dict:
     """Adapt a job_descriptions row to the shape the ScorQ scorer expects.
@@ -55,7 +76,10 @@ def _get_user(authorization: Optional[str]) -> str:
 async def _score_single(file_content: bytes, filename: str, job: dict, session_id: Optional[str] = None) -> dict:
     success, text = extract_text(file_content, filename)
     if not success:
-        raise ValueError(text)
+        # text holds the technical reason (logged via the caller); surface a
+        # clear, user-facing message instead of a raw stack/parser error.
+        print(f"Extraction failed for {filename}: {text}")
+        raise ValueError(_UNREADABLE_MSG)
     text = text.replace("\x00", "").replace("\u0000", "")
     contact = extract_contact_info(text)
     candidate_name = contact.get("name") or _name_from_filename(filename)
@@ -134,9 +158,15 @@ async def score_single(file: UploadFile = File(...), job_id: str = Form(...), au
     job_res = supabase.table("job_descriptions").select("*").eq("id", job_id).execute()
     if not job_res.data:
         raise HTTPException(status_code=404, detail="Job not found")
+    content = await file.read()
+    err = _validate_upload(file.filename, content)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     try:
-        content = await file.read()
         return await _score_single(content, file.filename, _job_for_scoring(job_res.data[0]))
+    except ValueError as e:
+        # Extraction / readability failure → clear 400, not a 500 crash.
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -170,6 +200,12 @@ async def score_batch(files: List[UploadFile] = File(...), job_id: str = Form(..
     for file in files:
         try:
             file_bytes = await file.read()
+            # Validate type/size up front so a bad file yields a clear per-file
+            # error instead of crashing the batch.
+            verr = _validate_upload(file.filename, file_bytes)
+            if verr:
+                errors.append({"filename": file.filename, "error": verr})
+                continue
             file_data.append((file_bytes, file.filename))
             print(f"Read: {file.filename} ({len(file_bytes)} bytes)")
         except Exception as e:

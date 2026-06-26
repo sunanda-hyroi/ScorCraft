@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 // Job Management Dashboard (Feature 2). Renders all jobs as a searchable,
 // filterable, sortable card grid. Click a card to select it and advance to the
-// upload step. Each card has a kebab menu (Edit / Duplicate / Archive / Delete).
+// upload step. Each card has a kebab menu (Duplicate / Archive / Delete) —
+// Duplicate is the edit flow (creates a new version, archives the original).
 // Branding: navy #1A2744, gold #C8963E.
 const NAVY = "#1A2744";
 const GOLD = "#C8963E";
@@ -11,11 +12,12 @@ const PAGE_SIZE = 12;
 
 const STATUS_STYLES = {
   active: { bg: "#ECFDF5", color: "#059669", label: "Active" },
-  draft: { bg: "#F3F4F6", color: "#6B7280", label: "Draft" },
   archived: { bg: "#FEF2F2", color: "#DC2626", label: "Archived" },
 };
 
-const TABS = ["All", "Active", "Draft", "Archived"];
+// A job is only ever Active or Archived — there is no Draft state (an unsaved
+// job simply does not exist until the user clicks Save).
+const TABS = ["All", "Active", "Archived"];
 const SORTS = [
   { key: "newest", label: "Newest first" },
   { key: "candidates", label: "Most candidates" },
@@ -43,7 +45,7 @@ function fmtDate(iso) {
   }
 }
 
-export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDuplicate, onArchive, onDelete, busy, currentUserName = "" }) {
+export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, onArchive, onDelete, busy, currentUserName = "" }) {
   const ALL_USERS = "All users";
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("All");
@@ -73,12 +75,11 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
   }, [currentUserName, creators]);
 
   const counts = useMemo(() => {
-    const c = { All: jobs.length, Active: 0, Draft: 0, Archived: 0 };
+    const c = { All: jobs.length, Active: 0, Archived: 0 };
     for (const j of jobs) {
       const s = statusOf(j);
-      if (s === "active") c.Active++;
-      else if (s === "draft") c.Draft++;
-      else if (s === "archived") c.Archived++;
+      if (s === "archived") c.Archived++;
+      else c.Active++; // anything not archived counts as active
     }
     return c;
   }, [jobs]);
@@ -216,7 +217,9 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onEdit, onDupli
                         onClick={(e) => e.stopPropagation()}
                         className="absolute right-0 top-7 z-10 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-sm"
                       >
-                        <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onEdit(job); }}>✏️ Edit</button>
+                        {/* No "Edit" — editing a job is done by Duplicate, which
+                            creates the next version and archives the original
+                            (ScorQ's edit-as-new-version flow). */}
                         <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onDuplicate(job); }}>📑 Duplicate</button>
                         {statusOf(job) !== "archived" && (
                           <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onArchive(job); }}>🗄️ Archive</button>

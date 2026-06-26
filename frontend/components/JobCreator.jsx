@@ -66,8 +66,12 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
   const [skillAliases, setSkillAliases] = useState(job?.skill_aliases || {});
   const [skillEquivalents, setSkillEquivalents] = useState(job?.skill_equivalents || {});
 
+  // When duplicating, default the title to the next version (e.g. "Analyst v2")
+  // unless the recruiter renames it. Strip any existing trailing " vN" first so
+  // duplicating a v2 yields v3, not "… v2 v3".
+  const nextVersion = (job?.version || 1) + 1;
   const [form, setForm] = useState(() => buildInitialForm(duplicate && job
-    ? { ...job, title: `${job.title || "Job"} (Copy)` }
+    ? { ...job, title: `${(job.title || "Job").replace(/\s+v\d+\s*$/i, "").trim()} v${nextVersion}` }
     : job));
 
   // ── Extract keywords from JD ─────────────────────────────────────────────
@@ -163,9 +167,11 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
     setSaving(true);
     setError("");
     try {
-      // Edit → PUT (may create a new version server-side when the job has scored
-      // candidates). Create / Duplicate → POST a brand-new job.
-      const saved = isEdit ? await api.updateJob(job.id, form) : await api.createJob(form);
+      // Duplicate → POST /:id/duplicate (creates the next version + archives the
+      // original — the edit-as-new-version flow). Plain create → POST a new job.
+      const saved = duplicate && job
+        ? await api.duplicateJob(job.id, form)
+        : await api.createJob(form);
       onCreated?.(saved);
     } catch (e) {
       setError(e?.message || "Failed to save");
@@ -186,6 +192,17 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
           {isEdit ? "Edit Job" : duplicate ? "Duplicate Job" : "New Job Description"}
         </h1>
       </div>
+
+      {/* Duplicate = edit-as-new-version: saving creates the next version and
+          archives the original (preserving its scores under the old version). */}
+      {duplicate && job && (
+        <div className="bg-[#EEF2FF] border border-[#4338CA]/30 text-[#3730A3] px-4 py-3 rounded-lg mb-5 text-sm">
+          Saving will create <strong>version {nextVersion}</strong> of this job and
+          archive <strong>version {job.version || 1}</strong>
+          {scoredCount > 0 ? <> — its {scoredCount} scored candidate{scoredCount === 1 ? "" : "s"} stay preserved under the old version.</> : "."}
+          {" "}Rename the title above if you don't want the default "v{nextVersion}" suffix.
+        </div>
+      )}
 
       {/* Versioning notice — editing a job with scored candidates creates v(N+1). */}
       {isEdit && scoredCount > 0 && (

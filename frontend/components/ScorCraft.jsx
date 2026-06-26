@@ -393,6 +393,7 @@ export default function ScorCraft(){
   const[letterhead,setLetterhead]=useState({company:"HYROI Solutions",tagline:"Talent Acquisition & Recruitment",email:"recruit@hyroi.com",phone:"+91 9100000000"});
   const[logoUrl,setLogoUrl]=useState(null);       // data URL, for preview
   const[logoPath,setLogoPath]=useState(null);     // Supabase storage path, for PDFs
+  const[logoErr,setLogoErr]=useState("");         // upload error surfaced to the user
   const[showSettings,setShowSettings]=useState(false);
   const logoRef=useRef(null);
 
@@ -402,6 +403,7 @@ export default function ScorCraft(){
   const[jobs,setJobs]=useState([]);                    // live jobs (if any)
   const[activeJob,setActiveJob]=useState(null);        // selected live job
   const[uploadFileObjs,setUploadFileObjs]=useState([]);// real File objects for scoring
+  const[uploadErr,setUploadErr]=useState("");          // resume upload validation error
   const[busy,setBusy]=useState("");                    // small status message
   const resumeRef=useRef(null);                        // hidden resume file input
 
@@ -458,9 +460,18 @@ export default function ScorCraft(){
   // fallbackToDemo/loadJobResults/selectJob (they depend on those callbacks).
 
   const SAMPLE_FILES=[{name:"Assadullah_Buriro_Resume.pdf",size:"245 KB"},{name:"Priya_Sharma_CV.pdf",size:"312 KB"},{name:"Rahul_Verma_Resume.docx",size:"189 KB"},{name:"Sneha_Patel_CV.pdf",size:"267 KB"},{name:"Vikram_Singh_Resume.pdf",size:"198 KB"},{name:"Meera_Krishnan_CV.docx",size:"223 KB"}];
+  // Accepted resume formats + size — kept in sync with the backend
+  // (ALLOWED_EXTENSIONS / MAX_UPLOAD_BYTES in api/scoring.py).
+  const ALLOWED_RESUME_EXT=[".pdf",".docx"];
+  const MAX_RESUME_BYTES=10*1024*1024; // 10 MB
   const handleResumeFiles=(e)=>{
     const files=Array.from(e.target.files||[]);
     if(!files.length)return;
+    setUploadErr("");
+    const bad=files.find(f=>!ALLOWED_RESUME_EXT.some(ext=>f.name.toLowerCase().endsWith(ext)));
+    if(bad){setUploadErr("Unsupported file format. Please upload a PDF or DOCX file.");if(e.target)e.target.value="";return;}
+    const tooBig=files.find(f=>f.size>MAX_RESUME_BYTES);
+    if(tooBig){setUploadErr("File too large. Maximum size is 10MB.");if(e.target)e.target.value="";return;}
     setUploadFileObjs(files);
     setUploadFiles(files.map(f=>({name:f.name,size:`${Math.round(f.size/1024)} KB`})));
   };
@@ -583,11 +594,25 @@ export default function ScorCraft(){
         clearInterval(iv);setScoringProgress(100);
         const mapped=(resp.results||[]).map(scoreResultToCandidate).sort((a,b)=>b.score-a.score);
         setCandidates(mapped);
+        // Surface per-file failures (e.g. corrupted/unsupported/too-large) so the
+        // recruiter knows some files were skipped instead of silently vanishing.
+        if(resp.errors?.length){
+          const lines=resp.errors.map(er=>`• ${er.filename}: ${er.error}`).join("\n");
+          setUploadErr(`${resp.errors.length} file(s) could not be scored:\n${lines}`);
+        }
         setTimeout(()=>setStep("results"),400);
         return;
       }catch(e){
         clearInterval(iv);
-        fallbackToDemo(e); // drops to demo banner; results shows empty state
+        // A genuine client error (400 validation / bad file) is NOT a backend
+        // outage — show it and stay on upload instead of dropping to demo.
+        if(e?.name==="DemoModeError"){
+          fallbackToDemo(e);
+        }else{
+          setUploadErr(e?.message||"Scoring failed. Please check your files and try again.");
+          setStep("upload");
+          return;
+        }
       }
     }
     // No live scoring available (demo mode, no job, or no real files) — go to
@@ -677,20 +702,26 @@ export default function ScorCraft(){
   const handleLogo=async(e)=>{
     const file=e.target.files?.[0];
     if(!file)return;
-    // Local preview.
-    const reader=new FileReader();reader.onload=ev=>setLogoUrl(ev.target.result);reader.readAsDataURL(file);
-    // Upload to Supabase storage so the backend can embed it in PDF footers.
-    // Path: logos/{user_id}_logo.png in the existing formatted-resumes bucket.
+    setLogoErr("");
+    // Validate before doing anything (logos are images, keep them small).
+    if(!/^image\//.test(file.type||"")){setLogoErr("Logo must be an image (PNG or JPG).");return;}
+    if(file.size>5*1024*1024){setLogoErr("Logo is too large. Maximum size is 5MB.");return;}
+    // Upload to Supabase storage FIRST, then show the preview — the preview must
+    // reflect what actually landed in storage. Previously the preview was set
+    // unconditionally from a local FileReader, so a silently-failed/skipped
+    // upload showed a logo that never reached the PDF. Path:
+    // logos/{user_id}_logo.png in the existing formatted-resumes bucket.
     try{
       const {data:{session}}=await supabase.auth.getSession();
       const uid=session?.user?.id;
-      if(!uid){console.warn("No session — logo not uploaded (preview only)");return;}
+      if(!uid){setLogoErr("Your session has expired — please sign in again to upload a logo.");return;}
       const path=`logos/${uid}_logo.png`;
-      const {data,error}=await supabase.storage.from("formatted-resumes").upload(path,file,{upsert:true,contentType:file.type||"image/png"});
-      console.log("[ScorCraft] logo upload result:",{path,data,error});
-      if(error){console.warn("Logo upload failed:",error.message);return;}
+      const {error}=await supabase.storage.from("formatted-resumes").upload(path,file,{upsert:true,contentType:file.type||"image/png"});
+      if(error){setLogoErr(`Logo upload failed: ${error.message}. It will not appear in PDFs.`);return;}
       setLogoPath(path);
-    }catch(err){console.warn("Logo upload error:",err);}
+      // Only now show the preview — it is backed by a real stored file.
+      const reader=new FileReader();reader.onload=ev=>setLogoUrl(ev.target.result);reader.readAsDataURL(file);
+    }catch(err){setLogoErr(`Logo upload error: ${err?.message||err}. It will not appear in PDFs.`);}
   };
 
   const steps=[{key:"job",label:"Select job"},{key:"upload",label:"Upload resumes"},{key:"scoring",label:"Scoring"},{key:"results",label:"Review & filter"},{key:"craft",label:"Craft resumes"}];
@@ -734,7 +765,6 @@ export default function ScorCraft(){
           currentUserName={currentUserName}
           onSelect={(job)=>{selectJob(job);setStep("upload");}}
           onCreate={()=>setShowCreateJob(true)}
-          onEdit={handleEditJob}
           onDuplicate={handleDuplicateJob}
           onArchive={handleArchiveJob}
           onDelete={handleDeleteJob}
@@ -748,11 +778,13 @@ export default function ScorCraft(){
     <div style={S.container}><div style={S.card}>
       <div style={S.h2}>Upload resumes</div>
       <p style={{...S.sub,marginBottom:12}}>Score against: <strong>{jobTitle}</strong></p>
-      <input ref={resumeRef} type="file" accept=".pdf,.docx,.doc" multiple style={{display:"none"}} onChange={handleResumeFiles}/>
-      <div style={{border:"2px dashed #D1D5DB",borderRadius:10,padding:"32px 16px",textAlign:"center",background:uploadFiles.length?"#EEF2FF":"#F9FAFB",cursor:"pointer",marginBottom:12}}
+      <input ref={resumeRef} type="file" accept=".pdf,.docx" multiple style={{display:"none"}} onChange={handleResumeFiles}/>
+      <div style={{border:"2px dashed #D1D5DB",borderRadius:10,padding:"32px 16px",textAlign:"center",background:uploadFiles.length?"#EEF2FF":"#F9FAFB",cursor:"pointer",marginBottom:6}}
         onClick={()=>resumeRef.current?.click()}>
         {uploadFiles.length===0?(<><div style={{fontSize:28,marginBottom:4}}>📄</div><div style={{fontSize:14,fontWeight:600,color:"#374151"}}>Drop resumes here or click to browse</div><div style={S.sub}>PDF or DOCX · Up to 20 files</div></>):(<><div style={{fontSize:14,fontWeight:600,color:INDIGO}}>{uploadFiles.length} files ready</div></>)}
       </div>
+      <div style={{fontSize:11,color:"#9CA3AF",marginBottom:8}}>Supported formats: PDF, DOCX · Max size: 10MB</div>
+      {uploadErr&&<div style={{marginBottom:12,fontSize:12,color:"#DC2626",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:8,padding:"8px 12px",whiteSpace:"pre-line"}}>{uploadErr}</div>}
       {uploadFiles.length>0&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:5,marginBottom:12}}>{uploadFiles.map(f=><div key={f.name} style={{display:"flex",alignItems:"center",gap:5,background:"#F9FAFB",borderRadius:6,padding:"5px 8px"}}><span>📄</span><div><div style={{fontSize:11,fontWeight:600}}>{f.name}</div><div style={{fontSize:9,color:"#9CA3AF"}}>{f.size}</div></div></div>)}</div>}
       <div style={{display:"flex",gap:10,alignItems:"center"}}>
         <button style={{...S.btn,opacity:uploadFiles.length?1:0.5}} disabled={!uploadFiles.length} onClick={runScoring}>Score {uploadFiles.length} resumes →</button>
@@ -851,8 +883,9 @@ export default function ScorCraft(){
                   <div>300×80px min · 3:1 to 5:1 ratio</div>
                   <div>Transparent background · Max 2MB</div>
                 </div>
-                {logoUrl&&<button style={{fontSize:11,color:"#DC2626",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}} onClick={()=>{setLogoUrl(null);setLogoPath(null);}}>Remove</button>}
+                {logoUrl&&<button style={{fontSize:11,color:"#DC2626",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}} onClick={()=>{setLogoUrl(null);setLogoPath(null);setLogoErr("");}}>Remove</button>}
               </div>
+              {logoErr&&<div style={{marginTop:8,fontSize:11,color:"#DC2626",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:6,padding:"6px 10px"}}>{logoErr}</div>}
             </div>
           </div>
         )}
@@ -908,6 +941,10 @@ export default function ScorCraft(){
     if(!editCandidate)return null;
     const c=editCandidate;
     const u=(fn)=>setEditCandidate(prev=>{const n=JSON.parse(JSON.stringify(prev));fn(n);return n;});
+    // Subtle gold dashed "+ Add" button for inserting new blocks into any section.
+    const addBtnStyle={fontSize:11,fontWeight:600,color:GOLD,background:"none",border:`1px dashed ${GOLD}`,borderRadius:6,padding:"4px 10px",cursor:"pointer",marginTop:6,marginBottom:4,display:"inline-flex",alignItems:"center",gap:4};
+    const AddBtn=({onClick,children})=>(<button type="button" style={addBtnStyle} onClick={onClick}>＋ {children}</button>);
+    const delBtn={background:"none",border:"none",color:"#DC2626",cursor:"pointer",fontSize:12,fontWeight:700,padding:"0 4px",flexShrink:0};
     return(
       <div style={S.modal} onClick={()=>setEditCandidate(null)}>
         <div style={{...S.modalBox,maxWidth:900}} onClick={e=>e.stopPropagation()}>
@@ -932,38 +969,89 @@ export default function ScorCraft(){
                   <span style={{color:"#9CA3AF",fontSize:10,marginTop:8,minWidth:16}}>{i+1}.</span>
                   <textarea style={{...S.input,height:40,resize:"vertical",fontSize:12}} value={p}
                     onChange={e=>u(n=>{n.executive_summary[i]=e.target.value})}/>
+                  <button style={delBtn} title="Remove bullet" onClick={()=>u(n=>{n.executive_summary.splice(i,1)})}>✕</button>
                 </div>
               ))}
+              <AddBtn onClick={()=>u(n=>{(n.executive_summary=n.executive_summary||[]).push("")})}>Add bullet point</AddBtn>
 
               <div style={{...S.label,marginTop:14}}>Employment & projects</div>
               {c.employment?.map((emp,i)=>(
                 <div key={i} style={{background:"#F9FAFB",borderRadius:8,padding:10,marginBottom:8,border:"1px solid #E5E7EB"}}>
                   <div style={{display:"flex",gap:6,marginBottom:6}}>
-                    <input style={{...S.input,fontWeight:600}} value={emp.company} onChange={e=>u(n=>{n.employment[i].company=e.target.value})}/>
-                    <input style={S.input} value={emp.role} onChange={e=>u(n=>{n.employment[i].role=e.target.value})}/>
+                    <input style={{...S.input,fontWeight:600}} placeholder="Company" value={emp.company} onChange={e=>u(n=>{n.employment[i].company=e.target.value})}/>
+                    <input style={S.input} placeholder="Role" value={emp.role} onChange={e=>u(n=>{n.employment[i].role=e.target.value})}/>
+                    <button style={delBtn} title="Remove company" onClick={()=>u(n=>{n.employment.splice(i,1)})}>✕</button>
                   </div>
                   {emp.projects?.map((proj,j)=>(
                     <div key={j} style={{marginLeft:8,paddingLeft:8,borderLeft:`2px solid ${GOLD}50`,marginBottom:6}}>
-                      <input style={{...S.input,fontSize:12,fontWeight:600,marginBottom:4}} value={proj.name} onChange={e=>u(n=>{n.employment[i].projects[j].name=e.target.value})}/>
+                      <div style={{display:"flex",gap:4,marginBottom:4}}>
+                        <input style={{...S.input,fontSize:12,fontWeight:600}} placeholder="Project name" value={proj.name} onChange={e=>u(n=>{n.employment[i].projects[j].name=e.target.value})}/>
+                        <button style={delBtn} title="Remove project" onClick={()=>u(n=>{n.employment[i].projects.splice(j,1)})}>✕</button>
+                      </div>
                       {proj.responsibilities?.map((r,k)=>(
                         <div key={k} style={{display:"flex",gap:4,marginBottom:3}}>
                           <span style={{color:"#D1D5DB",marginTop:7}}>•</span>
                           <input style={{...S.input,fontSize:11}} value={r} onChange={e=>u(n=>{n.employment[i].projects[j].responsibilities[k]=e.target.value})}/>
+                          <button style={delBtn} title="Remove responsibility" onClick={()=>u(n=>{n.employment[i].projects[j].responsibilities.splice(k,1)})}>✕</button>
                         </div>
                       ))}
+                      <AddBtn onClick={()=>u(n=>{(n.employment[i].projects[j].responsibilities=n.employment[i].projects[j].responsibilities||[]).push("")})}>Add responsibility</AddBtn>
                     </div>
                   ))}
+                  <AddBtn onClick={()=>u(n=>{(n.employment[i].projects=n.employment[i].projects||[]).push({name:"",duration:"",responsibilities:[],skills:""})})}>Add project</AddBtn>
                 </div>
               ))}
+              <AddBtn onClick={()=>u(n=>{(n.employment=n.employment||[]).push({company:"",role:"",duration:"",location:"",projects:[]})})}>Add company</AddBtn>
 
               <div style={{...S.label,marginTop:14}}>Certifications</div>
               {c.certifications?.map((cert,i)=>(
-                <div key={i} style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr",gap:6,marginBottom:4}}>
-                  <input style={S.input} value={cert.name} onChange={e=>u(n=>{n.certifications[i].name=e.target.value})}/>
-                  <input style={S.input} value={cert.issuer} onChange={e=>u(n=>{n.certifications[i].issuer=e.target.value})}/>
-                  <input style={S.input} placeholder="Expiry date" value={cert.expiry||""} onChange={e=>u(n=>{n.certifications[i].expiry=e.target.value})}/>
+                <div key={i} style={{display:"flex",gap:6,marginBottom:4}}>
+                  <input style={{...S.input,flex:2}} placeholder="Certification" value={cert.name} onChange={e=>u(n=>{n.certifications[i].name=e.target.value})}/>
+                  <input style={{...S.input,flex:1}} placeholder="Issuer" value={cert.issuer} onChange={e=>u(n=>{n.certifications[i].issuer=e.target.value})}/>
+                  <input style={{...S.input,flex:1}} placeholder="Expiry date" value={cert.expiry||""} onChange={e=>u(n=>{n.certifications[i].expiry=e.target.value})}/>
+                  <button style={delBtn} title="Remove certification" onClick={()=>u(n=>{n.certifications.splice(i,1)})}>✕</button>
                 </div>
               ))}
+              <AddBtn onClick={()=>u(n=>{(n.certifications=n.certifications||[]).push({name:"",issuer:"",expiry:""})})}>Add certification</AddBtn>
+
+              <div style={{...S.label,marginTop:14}}>Education</div>
+              {c.education?.map((ed,i)=>(
+                <div key={i} style={{display:"flex",gap:6,marginBottom:4}}>
+                  <input style={{...S.input,flex:2}} placeholder="Degree" value={ed.degree||""} onChange={e=>u(n=>{n.education[i].degree=e.target.value})}/>
+                  <input style={{...S.input,flex:2}} placeholder="Institution" value={ed.institution||""} onChange={e=>u(n=>{n.education[i].institution=e.target.value})}/>
+                  <input style={{...S.input,flex:1}} placeholder="Year" value={ed.year||""} onChange={e=>u(n=>{n.education[i].year=e.target.value})}/>
+                  <button style={delBtn} title="Remove education" onClick={()=>u(n=>{n.education.splice(i,1)})}>✕</button>
+                </div>
+              ))}
+              <AddBtn onClick={()=>u(n=>{(n.education=n.education||[]).push({level:"",degree:"",institution:"",year:""})})}>Add education</AddBtn>
+
+              <div style={{...S.label,marginTop:14}}>Core competencies</div>
+              {c.core_competencies?.map((comp,i)=>(
+                <div key={i} style={{display:"flex",gap:6,marginBottom:4}}>
+                  <input style={{...S.input,flex:1}} placeholder="Domain" value={comp.domain||""} onChange={e=>u(n=>{n.core_competencies[i].domain=e.target.value})}/>
+                  <input style={{...S.input,flex:2}} placeholder="Skills" value={comp.skills||""} onChange={e=>u(n=>{n.core_competencies[i].skills=e.target.value})}/>
+                  <input style={{...S.input,flex:2}} placeholder="Tools" value={comp.tools||""} onChange={e=>u(n=>{n.core_competencies[i].tools=e.target.value})}/>
+                  <button style={delBtn} title="Remove competency" onClick={()=>u(n=>{n.core_competencies.splice(i,1)})}>✕</button>
+                </div>
+              ))}
+              <AddBtn onClick={()=>u(n=>{(n.core_competencies=n.core_competencies||[]).push({domain:"",skills:"",tools:""})})}>Add competency</AddBtn>
+
+              <div style={{...S.label,marginTop:14}}>Technical competencies</div>
+              {[["programming_languages","Programming languages"],["tools_technologies","Tools & technologies"],["platforms","Platforms"]].map(([k,label])=>{
+                const tc=c.technical_competencies||{};
+                const has=tc[k]!==undefined&&tc[k]!==null;
+                return has?(
+                  <div key={k} style={{marginBottom:4}}>
+                    <div style={{fontSize:10,color:"#6B7280",marginBottom:3}}>{label}</div>
+                    <div style={{display:"flex",gap:6}}>
+                      <input style={S.input} value={tc[k]||""} onChange={e=>u(n=>{n.technical_competencies={...(n.technical_competencies||{}),[k]:e.target.value}})}/>
+                      <button style={delBtn} title="Remove field" onClick={()=>u(n=>{const t={...(n.technical_competencies||{})};delete t[k];n.technical_competencies=t})}>✕</button>
+                    </div>
+                  </div>
+                ):(
+                  <AddBtn key={k} onClick={()=>u(n=>{n.technical_competencies={...(n.technical_competencies||{}),[k]:""}})}>Add {label.toLowerCase()}</AddBtn>
+                );
+              })}
 
               {/* ── Action Items (internal only — never in downloads) ── */}
               {(()=>{

@@ -187,6 +187,11 @@ async def _craft_single(score_id: str, craft_settings: CraftSettings, user_id: O
         "score_id": score_id,
         "candidate_id": candidate.get("id"),
         "job_id": job_id,
+        # Persist the crafting user so the logo-backfill safety net
+        # (_resolve_logo_path) and audits can always resolve the owner. Without
+        # this the column was silently NULL on every row, which masked logo
+        # regressions and made crafts un-attributable.
+        "user_id": user_id,
         "structured_data": structured_data,
         "missing_report": missing_report,
         "formatted_file_path": formatted_filename,

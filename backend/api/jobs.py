@@ -150,6 +150,24 @@ def _build_job_row(payload: dict, user_id: Optional[str]) -> dict:
     return {k: v for k, v in row.items() if k in cols}
 
 
+def _next_lineage_version(original: dict) -> tuple:
+    """Compute (root_id, next_version) for the version lineage that `original`
+    belongs to. Root = the original's parent, or the original itself. The next
+    version is one past the max version seen across the root and all its
+    children. Shared by update (edit-as-new-version) and duplicate."""
+    root = original.get("parent_job_id") or original["id"]
+    # Two simple queries — this supabase-py build has no .or_() helper.
+    siblings = supabase.table("job_descriptions")\
+        .select("version").eq("parent_job_id", root).execute().data or []
+    root_row = supabase.table("job_descriptions")\
+        .select("version").eq("id", root).execute().data or []
+    next_version = max(
+        [(r.get("version") or 1) for r in (siblings + root_row)]
+        + [original.get("version") or 1]
+    ) + 1
+    return root, next_version
+
+
 def _candidate_counts() -> dict:
     """Live count of candidates scored per job_id (one score row = one candidate)."""
     counts: dict = {}
@@ -232,6 +250,73 @@ async def create_job(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/{job_id}/duplicate")
+async def duplicate_job(
+    job_id: str,
+    payload: dict = Body(default={}),
+    authorization: Optional[str] = Header(None),
+):
+    """Duplicate a job as the next version in its lineage (ScorQ's edit-as-new
+    -version flow — Duplicate IS the edit). The (optionally edited) payload seeds
+    a brand-new row with version = original.version + 1 and parent_job_id = the
+    lineage root, then the ORIGINAL is archived so only the latest version is
+    active. Falls back to a plain copy (version 1) if the versioning columns
+    aren't present yet.
+    """
+    user = _get_auth_user(authorization)
+    try:
+        cur = supabase.table("job_descriptions").select("*").eq("id", job_id).execute()
+        if not cur.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        original = cur.data[0]
+
+        cols = _job_columns()
+        versioning_available = "version" in cols and "parent_job_id" in cols
+
+        # Seed from the original, override with any edited fields the user saved.
+        merged = {**original, **(payload or {})}
+        if not (merged.get("title") or "").strip():
+            raise HTTPException(status_code=422, detail="Job title is required")
+
+        row = _build_job_row(merged, user.id)
+        row["status"] = "active"
+        if "candidates_scored_count" in cols:
+            row["candidates_scored_count"] = 0  # fresh version, not yet scored
+        # Attribution — keep the original creator's name across versions.
+        if "created_by_name" in cols:
+            row["created_by_name"] = original.get("created_by_name") or _display_name(user)
+
+        if versioning_available:
+            root, next_version = _next_lineage_version(original)
+            row["version"] = next_version
+            row["parent_job_id"] = root
+        row = {k: v for k, v in row.items() if k in cols}
+
+        created = supabase.table("job_descriptions").insert(row).execute()
+
+        # Archive the original so only the latest version stays active.
+        archived = False
+        if versioning_available:
+            try:
+                supabase.table("job_descriptions")\
+                    .update({"status": "archived"}).eq("id", job_id).execute()
+                archived = True
+            except Exception as e:
+                logging.getLogger("scorcraft.jobs").warning(
+                    "Duplicate: could not archive original %s: %s", job_id, e)
+
+        return {
+            "job": created.data[0],
+            "versioned": versioning_available,
+            "parent_job_id": job_id,
+            "archived_original": archived,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{job_id}")
 async def get_job(
     job_id: str,
@@ -280,18 +365,7 @@ async def update_job(
         row = _build_job_row(payload, user_id=None)  # don't reassign ownership
 
         if scored > 0 and versioning_available:
-            # Lineage root = the original's parent, or the original itself.
-            root = original.get("parent_job_id") or original["id"]
-            # Max version across the lineage (root + all its child versions).
-            # Two simple queries — this supabase-py build has no .or_() helper.
-            siblings = supabase.table("job_descriptions")\
-                .select("version").eq("parent_job_id", root).execute().data or []
-            root_row = supabase.table("job_descriptions")\
-                .select("version").eq("id", root).execute().data or []
-            next_version = max(
-                [(r.get("version") or 1) for r in (siblings + root_row)]
-                + [original.get("version") or 1]
-            ) + 1
+            root, next_version = _next_lineage_version(original)
 
             new_row = dict(row)
             new_row["version"] = next_version

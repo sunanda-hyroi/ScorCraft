@@ -177,7 +177,7 @@ export interface Job {
   company?: string;
   location?: string;
   description?: string;
-  status?: string; // active | draft | archived
+  status?: string; // active | archived
   must_have_skills?: string[];
   good_to_have_skills?: string[];
   bonus_skills?: string[];
@@ -284,6 +284,18 @@ export async function createJob(job: Partial<Job>): Promise<Job> {
 export async function updateJob(jobId: string, job: Partial<Job>): Promise<Job> {
   const data = await request<{ job: Job }>(`/api/v1/jobs/${jobId}`, {
     method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(job),
+  });
+  return data.job;
+}
+
+/** JobDashboard kebab → Duplicate → POST /api/v1/jobs/:id/duplicate.
+ * Creates the next version in the lineage (version+1, parent = root) from the
+ * edited form and archives the original. This IS the edit flow. */
+export async function duplicateJob(jobId: string, job: Partial<Job>): Promise<Job> {
+  const data = await request<{ job: Job }>(`/api/v1/jobs/${jobId}/duplicate`, {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(job),
   });
