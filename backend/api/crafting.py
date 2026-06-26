@@ -386,8 +386,14 @@ async def upload_logo(
             {"content-type": "image/png", "x-upsert": "true"},
         )
     except Exception as e:
-        logger.warning("Backend logo upload failed for %s: %s", logo_path, e)
-        raise HTTPException(status_code=500, detail=f"Logo upload failed: {e}")
+        logger.warning(
+            "Backend logo upload failed (bucket=%r, path=%s): %s",
+            settings.FORMATTED_BUCKET, logo_path, e,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=f"Logo upload failed (bucket={settings.FORMATTED_BUCKET!r}): {e}",
+        )
 
     # Best-effort signed URL so the UI can preview the stored logo immediately.
     logo_url = None

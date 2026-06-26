@@ -7,6 +7,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _bucket(env_name: str, default: str) -> str:
+    """Read a storage bucket name from the environment, defensively.
+
+    Railway/PaaS env values frequently arrive with surrounding quotes or a
+    trailing newline/space; Supabase Storage then rejects them with
+    "Bucket name invalid". Strip whitespace and any wrapping quotes, and fall
+    back to the default when the result is empty so a malformed override can
+    never produce an invalid bucket name.
+    """
+    raw = os.getenv(env_name, "") or ""
+    cleaned = raw.strip().strip('"').strip("'").strip()
+    return cleaned or default
+
+
 class Settings:
     # ── App ──────────────────────────────────────────────────
     APP_NAME: str = "RecruitCraft by HYROI Solutions"
@@ -26,9 +40,9 @@ class Settings:
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_KEY: str = os.getenv("SUPABASE_SERVICE_KEY", "")
-    RESUME_STORAGE_BUCKET: str = os.getenv("RESUME_STORAGE_BUCKET", "resumes")
-    ORIGINAL_BUCKET: str = os.getenv("ORIGINAL_BUCKET", "original-resumes")
-    FORMATTED_BUCKET: str = os.getenv("FORMATTED_BUCKET", "formatted-resumes")
+    RESUME_STORAGE_BUCKET: str = _bucket("RESUME_STORAGE_BUCKET", "resumes")
+    ORIGINAL_BUCKET: str = _bucket("ORIGINAL_BUCKET", "original-resumes")
+    FORMATTED_BUCKET: str = _bucket("FORMATTED_BUCKET", "formatted-resumes")
 
     # ── AI — OpenAI only ─────────────────────────────────────
     AI_PROVIDER: str = "openai"
