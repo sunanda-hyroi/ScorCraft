@@ -368,13 +368,22 @@ async def upload_logo(
         raise HTTPException(status_code=400, detail="Logo must be an image (PNG or JPG).")
 
     logo_path = f"logos/{user_id}_logo.png"
+    bucket = supabase.storage.from_(settings.FORMATTED_BUCKET)
     try:
-        # upsert so re-uploading replaces the existing logo. The content-type is
-        # normalized to image/png for the stored object regardless of source.
-        supabase.storage.from_(settings.FORMATTED_BUCKET).upload(
+        # Overwrite any existing logo. storage3 0.5.5 honors upsert only via the
+        # `x-upsert` header (the `upsert` key is ignored) — without it a repeat
+        # upload to the same path 400s with "Duplicate / resource already
+        # exists". As a version-proof fallback, drop any existing object first so
+        # the upload is always a fresh create. The content-type is normalized to
+        # image/png regardless of the source format.
+        try:
+            bucket.remove([logo_path])
+        except Exception:
+            pass
+        bucket.upload(
             logo_path,
             content,
-            {"content-type": "image/png", "upsert": "true"},
+            {"content-type": "image/png", "x-upsert": "true"},
         )
     except Exception as e:
         logger.warning("Backend logo upload failed for %s: %s", logo_path, e)
@@ -383,10 +392,9 @@ async def upload_logo(
     # Best-effort signed URL so the UI can preview the stored logo immediately.
     logo_url = None
     try:
-        signed = supabase.storage.from_(settings.FORMATTED_BUCKET).create_signed_url(
-            logo_path, 3600
-        )
-        logo_url = signed.get("signedURL") or signed.get("signedUrl") if isinstance(signed, dict) else None
+        signed = bucket.create_signed_url(logo_path, 3600)
+        if isinstance(signed, dict):
+            logo_url = signed.get("signedURL") or signed.get("signedUrl")
     except Exception as e:
         logger.info("Logo signed-url skipped for %s (%s)", logo_path, e)
 
