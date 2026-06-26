@@ -1,24 +1,46 @@
 """
 ScorCraft — Central config. Reads from .env
 """
+import logging
 import os
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_logger = logging.getLogger("scorcraft.config")
+
+# Supabase Storage bucket names are limited to letters, digits and . _ - ; any
+# other character makes Storage reject the request with "Bucket name invalid".
+_BUCKET_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _bucket(env_name: str, default: str) -> str:
     """Read a storage bucket name from the environment, defensively.
 
-    Railway/PaaS env values frequently arrive with surrounding quotes or a
-    trailing newline/space; Supabase Storage then rejects them with
-    "Bucket name invalid". Strip whitespace and any wrapping quotes, and fall
-    back to the default when the result is empty so a malformed override can
-    never produce an invalid bucket name.
+    Two real-world failure modes are handled so a misconfigured env var can
+    never produce an invalid bucket name (Storage 400 "Bucket name invalid"):
+
+    1. Quotes / trailing newline or spaces — common on Railway/PaaS — are
+       stripped.
+    2. A value containing characters illegal in a bucket name (e.g. a secret or
+       password accidentally pasted into the wrong variable) is rejected and the
+       safe default is used instead. Such a value can never work, so falling
+       back is strictly better than guaranteed failure. A warning is logged so
+       the misconfiguration is still visible.
     """
     raw = os.getenv(env_name, "") or ""
     cleaned = raw.strip().strip('"').strip("'").strip()
-    return cleaned or default
+    if not cleaned:
+        return default
+    if not _BUCKET_RE.match(cleaned):
+        _logger.warning(
+            "%s=%r is not a valid bucket name — falling back to %r. "
+            "Check the env var (a secret may be pasted into the wrong variable).",
+            env_name, cleaned, default,
+        )
+        return default
+    return cleaned
 
 
 class Settings:
