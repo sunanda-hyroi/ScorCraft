@@ -20,7 +20,7 @@ from services.pdf_generator import (
     generate_scorecard_pdf,
     generate_combined_pdf,
 )
-from services.docx_generator import create_corporate_resume
+from services.docx_generator import create_corporate_resume, create_combined_docx
 from config import settings
 
 
@@ -69,11 +69,14 @@ def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
 
 def _company_kwargs(craft_settings: dict) -> dict:
     """Footer/company params shared by resume + combined PDFs. The footer shows
-    company name + tagline only (email/phone are not in the PDF footer)."""
+    company name + tagline only (email/phone are not in the PDF footer). Also
+    carries the optional resume header/footer toggles."""
     return {
         "company_name": craft_settings.get("company_name", "HYROI Solutions"),
         "company_tagline": craft_settings.get("company_tagline"),
         "logo_path": _fetch_logo_bytes(craft_settings.get("logo_storage_path")),
+        "include_header": craft_settings.get("include_header", True),
+        "include_footer": craft_settings.get("include_footer", True),
     }
 
 
@@ -209,6 +212,10 @@ async def download_docx(
                 structured_data,
                 company_name=craft_settings.get("company_name", "HYROI Solutions"),
                 mask_contacts=craft_settings.get("mask_pi", False),
+                logo_bytes=_fetch_logo_bytes(craft_settings.get("logo_storage_path")),
+                company_tagline=craft_settings.get("company_tagline"),
+                include_header=craft_settings.get("include_header", True),
+                include_footer=craft_settings.get("include_footer", True),
             )
 
         # 4. Build a safe filename (structured_data may be null/missing).
@@ -368,3 +375,61 @@ async def download_combined_pdf(
         traceback.print_exc()
         logger.exception("Combined PDF download failed for craft_id=%s", craft_id)
         raise HTTPException(status_code=500, detail=f"Combined PDF download failed: {e}")
+
+
+@router.get("/{craft_id}/combined-docx")
+async def download_combined_docx(
+    craft_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """
+    Combined DOCX: crafted resume pages + the scorecard rendered as a structured
+    python-docx table page (last section). No pdf2image / poppler — pure tables.
+    Action items are NOT included — they're internal-only.
+    """
+    try:
+        _get_user(authorization)
+        craft, score, job = _fetch_craft_and_score(craft_id)
+
+        structured_data = craft.get("structured_data") or {}
+        candidate = score.get("candidates") or {}
+        craft_settings = craft.get("craft_settings") or {}
+        mask = craft_settings.get("mask_pi", False)
+
+        scorecard = {
+            "candidate_name": candidate.get("name", "Unknown"),
+            "candidate_email": None if mask else candidate.get("email"),
+            "candidate_phone": None if mask else candidate.get("phone"),
+            "overall_score": score.get("overall_score", 0),
+            "category_scores": score.get("category_scores", {}),
+            "matched_skills": score.get("matched_skills", []),
+            "highlights": score.get("highlights", []),
+            "ai_reasoning": score.get("ai_reasoning", ""),
+            "job_title": job.get("title", ""),
+        }
+
+        docx_bytes = create_combined_docx(
+            structured_data,
+            scorecard,
+            company_name=craft_settings.get("company_name", "HYROI Solutions"),
+            mask_contacts=mask,
+            logo_bytes=_fetch_logo_bytes(craft_settings.get("logo_storage_path")),
+            company_tagline=craft_settings.get("company_tagline"),
+            include_header=craft_settings.get("include_header", True),
+            include_footer=craft_settings.get("include_footer", True),
+        )
+
+        safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="{safe_name}_scorcraft.docx"'
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.exception("Combined DOCX download failed for craft_id=%s", craft_id)
+        raise HTTPException(status_code=500, detail=f"Combined DOCX download failed: {e}")

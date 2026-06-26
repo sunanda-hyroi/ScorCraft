@@ -232,6 +232,8 @@ export interface CraftSettings {
   company_email?: string;
   company_phone?: string;
   logo_storage_path?: string;
+  include_header?: boolean;
+  include_footer?: boolean;
 }
 
 export interface CraftResult {
@@ -259,7 +261,8 @@ export type DownloadKind =
   | "docx"
   | "resume-pdf"
   | "scorecard-pdf"
-  | "combined-pdf";
+  | "combined-pdf"
+  | "combined-docx";
 
 // ── Endpoint wrappers ────────────────────────────────────────────
 
@@ -370,6 +373,24 @@ export async function getResults(jobId?: string): Promise<unknown[]> {
   const qs = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
   const data = await request<{ results: unknown[] }>(`/api/v1/results${qs}`);
   return data.results || [];
+}
+
+/**
+ * Craft Settings logo upload → POST /api/v1/craft/upload-logo (multipart).
+ *
+ * The backend uploads to Supabase storage with the SERVICE KEY, bypassing the
+ * Storage RLS policy that rejects direct frontend uploads. Returns the
+ * deterministic storage path to persist in craft_settings.logo_storage_path.
+ */
+export async function uploadLogo(
+  file: File
+): Promise<{ logo_storage_path: string; logo_url: string | null }> {
+  const form = new FormData();
+  form.append("file", file);
+  return request<{ logo_storage_path: string; logo_url: string | null }>(
+    "/api/v1/craft/upload-logo",
+    { method: "POST", body: form }
+  );
 }
 
 /** CraftQueue → POST /api/v1/craft/single */

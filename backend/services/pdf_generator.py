@@ -371,6 +371,16 @@ class NumberedCanvas(canvas.Canvas):
 
     def _draw_footer(self, page_num, total):
         f = self._footer or {}
+        # Per-page override: the combined PDF keeps its own ScorQ footer on the
+        # scorecard (always the LAST page) regardless of the resume's
+        # include_footer toggle. `_last_page` holds that override config.
+        last = f.get("_last_page")
+        if last is not None and page_num == total:
+            f = last
+        # `hidden` → draw no footer at all (include_footer toggle OFF). Bail
+        # before saveState so the page is left completely clean.
+        if not f or f.get("hidden"):
+            return
         self.saveState()
 
         # Gold rule above the footer.
@@ -479,16 +489,24 @@ def _table_from_rows(headers, rows, col_widths, styles, header_font=9, cell_font
 
 
 def _build_resume_story(styles, data, mask_contacts, logo=None,
-                        company_name="HYROI Solutions", company_tagline=None):
-    """Resume flowables. All tables wrap; nothing overflows."""
+                        company_name="HYROI Solutions", company_tagline=None,
+                        include_header=True):
+    """Resume flowables. All tables wrap; nothing overflows.
+
+    `include_header` controls the branded banner strip (logo + company name) at
+    the top of page 1. When False, the resume starts directly with the navy
+    candidate header.
+    """
     story = []
     candidate = data.get("candidate_info", {}) or {}
 
     # ── Branded banner strip (first page only; logo left, company right) ──
     # As the first flowable, it renders only at the top of page 1; the navy
-    # candidate header follows directly below.
-    story.append(_brand_banner(styles, logo, company_name, company_tagline))
-    story.append(Spacer(1, 6))
+    # candidate header follows directly below. Suppressed when the header
+    # toggle is off.
+    if include_header:
+        story.append(_brand_banner(styles, logo, company_name, company_tagline))
+        story.append(Spacer(1, 6))
 
     # ── Header (navy bar) ────────────────────────────────────
     contact_parts = []
@@ -640,12 +658,20 @@ def generate_resume_pdf(
     mask_contacts: bool = False,
     logo_path=None,
     company_tagline: str = None,
+    include_header: bool = True,
+    include_footer: bool = True,
 ) -> bytes:
-    """Generate formatted resume as PDF (branded banner on page 1, CONFIDENTIAL footer)."""
+    """Generate formatted resume as PDF.
+
+    `include_header` toggles the branded banner strip (logo + company) on page 1.
+    `include_footer` toggles the CONFIDENTIAL / page-number footer on every page.
+    """
     styles = _get_styles()
     story = _build_resume_story(styles, data, mask_contacts, logo=logo_path,
-                                company_name=company_name, company_tagline=company_tagline)
-    return _render(story, _company_footer(company_name, company_tagline))
+                                company_name=company_name, company_tagline=company_tagline,
+                                include_header=include_header)
+    footer = _company_footer(company_name, company_tagline) if include_footer else {"hidden": True}
+    return _render(story, footer)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -965,12 +991,20 @@ def generate_combined_pdf(
     job_title: str = "",
     logo_path=None,
     company_tagline: str = None,
+    include_header: bool = True,
+    include_footer: bool = True,
 ) -> bytes:
-    """Combined PDF: crafted resume pages followed by the one-page scorecard."""
+    """Combined PDF: crafted resume pages followed by the one-page scorecard.
+
+    The resume pages follow the include_header / include_footer toggles. The
+    scorecard (always the last page) keeps its own ScorQ header and footer
+    regardless of those toggles.
+    """
     styles = _get_styles()
 
     story = _build_resume_story(styles, resume_data, mask_contacts, logo=logo_path,
-                                company_name=company_name, company_tagline=company_tagline)
+                                company_name=company_name, company_tagline=company_tagline,
+                                include_header=include_header)
     story.append(PageBreak())
     story.extend(_build_scorecard_story(
         styles, candidate_name, candidate_email, candidate_phone,
@@ -979,4 +1013,8 @@ def generate_combined_pdf(
         ai_reasoning, job_title, _cert_names((resume_data or {}).get("certifications")),
     ))
 
-    return _render(story, _company_footer(company_name, company_tagline))
+    # Resume pages: company footer (or none when toggled off). Scorecard (last
+    # page): always the ScorQ footer via the _last_page override.
+    footer = _company_footer(company_name, company_tagline) if include_footer else {"hidden": True}
+    footer["_last_page"] = _scorq_footer()
+    return _render(story, footer)

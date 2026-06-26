@@ -188,7 +188,9 @@ export function candidateToStructured(c: any): Record<string, unknown> {
 export function craftSettingsFrom(
   letterhead: { company?: string; tagline?: string; email?: string; phone?: string },
   maskPI: boolean,
-  logoStoragePath?: string | null
+  logoStoragePath?: string | null,
+  includeHeader: boolean = true,
+  includeFooter: boolean = true
 ) {
   return {
     mask_pi: maskPI,
@@ -196,6 +198,8 @@ export function craftSettingsFrom(
     company_tagline: letterhead.tagline,
     company_email: letterhead.email,
     company_phone: letterhead.phone,
+    include_header: includeHeader,
+    include_footer: includeFooter,
     ...(logoStoragePath ? { logo_storage_path: logoStoragePath } : {}),
   };
 }
