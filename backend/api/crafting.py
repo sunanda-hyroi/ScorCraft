@@ -338,6 +338,14 @@ async def update_crafted_resume(
         "status": "edited",
     }).eq("id", craft_id).execute()
 
+    # Drop the rendered-document cache so the next PDF/combined download
+    # regenerates from the edited data instead of serving the stale rendering.
+    try:
+        from api.download import invalidate_craft_cache
+        invalidate_craft_cache(craft_id)
+    except Exception as e:
+        logger.info("Cache invalidation skipped for %s (%s)", craft_id, e)
+
     return {
         "craft_id": craft_id,
         "status": "updated",

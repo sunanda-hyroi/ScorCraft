@@ -201,7 +201,15 @@ def _add_brand_banner(doc, logo_bytes, company_name, company_tagline):
     if logo_bytes:
         try:
             run = left.paragraphs[0].add_run()
-            run.add_picture(io.BytesIO(logo_bytes), height=Cm(0.85))
+            # Match the PDF banner's larger logo (≈35px tall). python-docx keeps
+            # aspect ratio when only height is given; cap the width so a very wide
+            # logo can't overrun the banner cell.
+            pic = run.add_picture(io.BytesIO(logo_bytes), height=Cm(1.0))
+            max_w = Cm(4.7)
+            if pic.width > max_w:
+                ratio = max_w / pic.width
+                pic.width = max_w
+                pic.height = int(pic.height * ratio)
             placed = True
         except Exception:
             placed = False

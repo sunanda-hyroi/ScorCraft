@@ -14,3 +14,42 @@ body {
 * {
   box-sizing: border-box;
 }
+
+/* Inline-style spinner used by ScorCraft loading buttons/banners. */
+@keyframes scc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.scc-spin {
+  animation: scc-spin 0.7s linear infinite;
+}
+
+/* Pulsing skeleton placeholder (job dashboard loading state). */
+@keyframes scc-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.scc-pulse {
+  animation: scc-pulse 1.3s ease-in-out infinite;
+}
+
+/* Toast slide-in (download complete / errors). */
+@keyframes scc-toast-in {
+  from {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+.scc-toast {
+  animation: scc-toast-in 0.2s ease-out;
+}

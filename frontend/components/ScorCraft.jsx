@@ -139,6 +139,60 @@ const S = {
   modalBox:{background:"#fff",borderRadius:14,width:"100%",maxHeight:"92vh",overflow:"hidden",display:"flex",flexDirection:"column"},
 };
 
+// ─── Spinner ─────────────────────────────────────────────────────
+// Small inline spinning ring for loading buttons/banners. Color follows the
+// surrounding text (currentColor) unless overridden.
+function Spinner({size=13,color="currentColor"}){
+  return(
+    <span className="scc-spin" style={{
+      display:"inline-block",width:size,height:size,
+      border:`2px solid ${color}`,borderTopColor:"transparent",
+      borderRadius:"50%",flexShrink:0,
+    }}/>
+  );
+}
+
+// ─── Job dashboard loading skeleton ──────────────────────────────
+// Shown while live jobs are being fetched so the user never sees a blank
+// screen (Fix 2). Mirrors the JobDashboard card grid layout.
+function JobsSkeleton(){
+  const card={background:"#fff",borderRadius:12,border:"1px solid #E5E7EB",padding:20};
+  const bar=(w,h=12,mt=0)=>(<div className="scc-pulse" style={{width:w,height:h,marginTop:mt,background:"#E5E7EB",borderRadius:6}}/>);
+  return(
+    <div style={{maxWidth:1100,margin:"0 auto"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <div>{bar(120,24)}{bar(180,12,8)}</div>
+        {bar(140,40)}
+      </div>
+      <div style={{display:"flex",gap:12,marginBottom:20}}>{bar(280,42)}{bar(160,42)}{bar(160,42)}</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:16}}>
+        {Array.from({length:6}).map((_,i)=>(
+          <div key={i} style={card}>
+            {bar(70,18)}{bar("80%",16,12)}{bar("55%",12,6)}{bar("40%",10,6)}
+            <div style={{borderTop:"1px solid #F3F4F6",marginTop:16,paddingTop:12,display:"flex",justifyContent:"space-between"}}>{bar(60,12)}{bar(70,12)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── Toast ───────────────────────────────────────────────────────
+// Brief bottom-center notification (download complete / errors).
+function Toast({toast}){
+  if(!toast)return null;
+  const ok=toast.type!=="error";
+  return(
+    <div className="scc-toast" style={{
+      position:"fixed",bottom:24,left:"50%",transform:"translateX(-50%)",zIndex:2000,
+      background:ok?"#065F46":"#991B1B",color:"#fff",padding:"10px 18px",borderRadius:10,
+      fontSize:13,fontWeight:600,boxShadow:"0 4px 16px rgba(0,0,0,0.2)",display:"flex",alignItems:"center",gap:8,maxWidth:"90vw",
+    }}>
+      <span>{ok?"✓":"⚠"}</span><span>{toast.msg}</span>
+    </div>
+  );
+}
+
 // ─── Toggle ──────────────────────────────────────────────────────
 function Toggle({on,onChange,label}){
   return(
@@ -407,11 +461,21 @@ export default function ScorCraft(){
   const[demoMode,setDemoMode]=useState(true);          // until /health proves live
   const[configured,setConfigured]=useState(true);      // /health configured flag — drives the demo banner
   const[jobs,setJobs]=useState([]);                    // live jobs (if any)
+  const[jobsLoading,setJobsLoading]=useState(true);    // job dashboard fetch in flight (skeleton)
   const[activeJob,setActiveJob]=useState(null);        // selected live job
   const[uploadFileObjs,setUploadFileObjs]=useState([]);// real File objects for scoring
   const[uploadErr,setUploadErr]=useState("");          // resume upload validation error
   const[busy,setBusy]=useState("");                    // small status message
+  const[craftingAll,setCraftingAll]=useState(false);   // batch craft in flight
+  const[downloading,setDownloading]=useState(null);    // active download key (button loading)
+  const[toast,setToast]=useState(null);                // transient success/error notice
   const resumeRef=useRef(null);                        // hidden resume file input
+
+  // Show a transient toast (auto-dismiss). type: "success" | "error".
+  const showToast=useCallback((msg,type="success")=>{
+    setToast({msg,type});
+    setTimeout(()=>setToast(null),type==="error"?4500:2500);
+  },[]);
 
   // ── Auth ──────────────────────────────────────────────────────
   const router=useRouter();
@@ -523,6 +587,7 @@ export default function ScorCraft(){
           }
         }
       }catch(e){fallbackToDemo(e);}
+      finally{if(!cancelled)setJobsLoading(false);}
     })();
     return()=>{cancelled=true;};
   },[fallbackToDemo,loadJobResults]);
@@ -633,32 +698,45 @@ export default function ScorCraft(){
   const craftOne=useCallback(async(cand)=>{
     // Live: call API if we have a real score id; else just mark crafted (demo).
     if(!demoMode&&cand.scoreId){
+      setCraftingId(cand.id);
       setBusy(`Crafting ${cand.name}…`);
       try{
         const res=await api.craftSingle(cand.scoreId,craftSettings());
         const merged=applyCraftResult(cand,res);
         setCraftQueue(p=>p.map(x=>x.id===cand.id?merged:x));
-        setBusy("");
+        setBusy("");setCraftingId(null);
+        showToast(`Crafted ${cand.name}`);
         return;
-      }catch(e){fallbackToDemo(e);setBusy("");}
+      }catch(e){
+        setBusy("");setCraftingId(null);
+        if(e?.name!=="DemoModeError"){showToast(e?.message||"Crafting failed. Please try again.","error");return;}
+        fallbackToDemo(e);
+      }
     }
     setCraftQueue(p=>p.map(x=>x.id===cand.id?{...x,crafted:true}:x));
-  },[demoMode,letterhead,maskPI,logoPath,includeHeader,includeFooter,fallbackToDemo]);
+  },[demoMode,letterhead,maskPI,logoPath,includeHeader,includeFooter,fallbackToDemo,showToast]);
 
   const craftAll=useCallback(async()=>{
     const ids=craftQueue.filter(c=>c.scoreId&&!c.crafted).map(c=>c.scoreId);
     if(!demoMode&&ids.length){
-      setBusy(`Crafting ${ids.length} resumes…`);
+      setCraftingAll(true);
+      setBusy(`Crafting ${ids.length} resume${ids.length>1?"s":""}…`);
       try{
         const resp=await api.craftBatch(ids,craftSettings());
         const byScore=new Map((resp.results||[]).map(r=>[r.score_id,r]));
         setCraftQueue(p=>p.map(c=>byScore.has(c.scoreId)?applyCraftResult(c,byScore.get(c.scoreId)):c));
-        setBusy("");
+        setBusy("");setCraftingAll(false);
+        const failed=resp.failed||0;
+        showToast(failed?`Crafted ${resp.crafted||0}, ${failed} failed`:`Crafted ${resp.crafted||ids.length} resumes`,failed?"error":"success");
         return;
-      }catch(e){fallbackToDemo(e);setBusy("");}
+      }catch(e){
+        setBusy("");setCraftingAll(false);
+        if(e?.name!=="DemoModeError"){showToast(e?.message||"Batch craft failed. Please try again.","error");return;}
+        fallbackToDemo(e);
+      }
     }
     setCraftQueue(p=>p.map(c=>({...c,crafted:true})));
-  },[craftQueue,demoMode,letterhead,maskPI,logoPath,includeHeader,includeFooter,fallbackToDemo]);
+  },[craftQueue,demoMode,letterhead,maskPI,logoPath,includeHeader,includeFooter,fallbackToDemo,showToast]);
 
   // ── Editor save ───────────────────────────────────────────────
   const saveEdited=useCallback(async(cand)=>{
@@ -680,26 +758,42 @@ export default function ScorCraft(){
       "Combined: Resume + Scorecard":{PDF:"combined-pdf",DOCX:"combined-docx"},
     };
     const endpoint=kindMap[kind]?.[format];
+    const key=`${kind}-${format}`;
     if(!demoMode&&cand.craftId&&endpoint){
+      setDownloading(key);
       try{
         await api.downloadCraft(cand.craftId,endpoint,`${cand.name}_${endpoint}.${format.toLowerCase()}`);
+        setDownloading(null);
+        showToast("Download complete");
         return;
-      }catch(e){fallbackToDemo(e);}
+      }catch(e){
+        setDownloading(null);
+        // A real backend error (not an outage) → show it; don't fall to demo.
+        if(e?.name!=="DemoModeError"){showToast(e?.message||"Download failed. Please try again.","error");return;}
+        fallbackToDemo(e);
+      }
     }
     alert(`Demo mode — downloads need a live backend.\n\nWould download: ${kind} (${format})\nPI masked: ${maskPI} · Logo: ${logoUrl?"Yes":"No"}\n\nAdd credentials to backend/.env and craft a resume to enable real downloads.`);
-  },[demoMode,maskPI,logoUrl,fallbackToDemo]);
+  },[demoMode,maskPI,logoUrl,fallbackToDemo,showToast]);
 
   // Review & Filter stage: download the scorecard PDF straight from the score
   // (no craft_id needed) via /api/v1/download/score/:scoreId/scorecard-pdf.
   const downloadScorecard=useCallback(async(cand)=>{
     if(!demoMode&&cand.scoreId){
+      setDownloading(`sc-${cand.scoreId}`);
       try{
         await api.downloadScoreScorecard(cand.scoreId,`${cand.name}_scorecard.pdf`);
+        setDownloading(null);
+        showToast("Download complete");
         return;
-      }catch(e){fallbackToDemo(e);}
+      }catch(e){
+        setDownloading(null);
+        if(e?.name!=="DemoModeError"){showToast(e?.message||"Download failed. Please try again.","error");return;}
+        fallbackToDemo(e);
+      }
     }
     alert(`Demo mode — the scorecard download needs a live backend and a scored candidate.`);
-  },[demoMode,fallbackToDemo]);
+  },[demoMode,fallbackToDemo,showToast]);
 
   const filtered=candidates.filter(c=>c.score>=scoreRange[0]&&c.score<=scoreRange[1]);
   const toggleSelect=id=>{setSelected(p=>{const n=new Set(p);n.has(id)?n.delete(id):n.add(id);return n;});};
@@ -757,6 +851,10 @@ export default function ScorCraft(){
           <JobCreator onCreated={handleJobCreated} onCancel={()=>setShowCreateJob(false)}/>
         </div>
       );
+    }
+    // Still fetching the live jobs → skeleton instead of a blank/black screen.
+    if(jobsLoading){
+      return <div style={{padding:"20px"}}><JobsSkeleton/></div>;
     }
     // Default → job management dashboard (its own empty state when no jobs).
     return(
@@ -871,7 +969,7 @@ export default function ScorCraft(){
             <div style={{marginTop:12}}>
               <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
                 <span style={{fontSize:11,fontWeight:600,color:"#6B7280"}}>Company logo</span>
-                <span title="Recommended: PNG or SVG, 300×80px minimum, 3:1 to 5:1 width-to-height ratio, transparent background, max 2MB"
+                <span title={"For best results:\n• Crop your logo tightly — remove any whitespace/padding around the logo\n• Use PNG with transparent background\n• Recommended size: 400×100px (4:1 ratio)\n• Minimum: 200×50px\n• Maximum file size: 2MB"}
                   style={{width:16,height:16,borderRadius:8,background:"#E5E7EB",display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color:"#6B7280",cursor:"help"}}>i</span>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:12}}>
@@ -881,12 +979,13 @@ export default function ScorCraft(){
                 </div>
                 <input ref={logoRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleLogo}/>
                 <div style={{fontSize:10,color:"#9CA3AF",lineHeight:1.5}}>
-                  <div>PNG or SVG recommended</div>
-                  <div>300×80px min · 3:1 to 5:1 ratio</div>
-                  <div>Transparent background · Max 2MB</div>
+                  <div>Crop tightly — remove whitespace around the logo</div>
+                  <div>PNG with transparent background</div>
+                  <div>Recommended 400×100px (4:1) · min 200×50px · max 2MB</div>
                 </div>
                 {logoUrl&&<button style={{fontSize:11,color:"#DC2626",background:"none",border:"none",cursor:"pointer",textDecoration:"underline"}} onClick={()=>{setLogoUrl(null);setLogoPath(null);setLogoErr("");}}>Remove</button>}
               </div>
+              {logoUrl&&!logoErr&&<div style={{marginTop:8,fontSize:11,color:"#92400E",background:"#FFFBEB",border:"1px solid #FDE68A",borderRadius:6,padding:"6px 10px"}}>💡 Tip: If your logo appears too small, try cropping the whitespace around it and re-uploading.</div>}
               {logoErr&&<div style={{marginTop:8,fontSize:11,color:"#DC2626",background:"#FEF2F2",border:"1px solid #FECACA",borderRadius:6,padding:"6px 10px"}}>{logoErr}</div>}
             </div>
             {/* Resume header / footer toggles (scorecard keeps its own ScorQ header/footer) */}
@@ -912,6 +1011,7 @@ export default function ScorCraft(){
       {/* Rows */}
       {filtered.map(c=>(
         <CandidateRow key={c.id} c={c} job={jobForDisplay} cutoff={cutoff} selected={selected.has(c.id)} masked={maskPI} logoUrl={logoUrl}
+          downloading={downloading===`sc-${c.scoreId}`}
           onToggle={()=>toggleSelect(c.id)} onCraft={()=>{setCraftQueue([c]);setStep("craft");}} onViewScorecard={()=>setViewScorecard(c)} onDownload={()=>downloadScorecard(c)}/>
       ))}
     </div>
@@ -923,7 +1023,7 @@ export default function ScorCraft(){
     <div style={S.container}>
       <div style={{display:"flex",justifyContent:"space-between",marginBottom:12}}>
         <div><div style={S.h2}>Craft resumes ({craftQueue.length})</div><p style={S.sub}>Format, edit, and download</p></div>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>{busy&&<span style={{fontSize:11,color:INDIGO}}>{busy}</span>}<button style={S.btn} onClick={craftAll}>Batch craft all</button><button style={S.btnO} onClick={()=>setStep("results")}>← Back</button></div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>{busy&&<span style={{fontSize:11,color:INDIGO}}>{busy}</span>}<button style={{...S.btn,opacity:craftingAll?0.7:1,cursor:craftingAll?"default":"pointer"}} disabled={craftingAll} onClick={craftAll}>{craftingAll&&<Spinner size={12} color="#fff"/>}{craftingAll?"Crafting…":"Batch craft all"}</button><button style={S.btnO} onClick={()=>setStep("results")}>← Back</button></div>
       </div>
       {craftQueue.map(c=>(
         <div key={c.id} style={{...S.card,padding:0,overflow:"hidden"}}>
@@ -940,7 +1040,7 @@ export default function ScorCraft(){
                 <button style={S.btnO} onClick={()=>setViewScorecard(c)}>Scorecard</button>
                 <button style={S.btnO} onClick={()=>setEditCandidate(JSON.parse(JSON.stringify(c)))}>Edit</button>
                 <button style={S.btnS} onClick={()=>setDownloadModal(c)}>Download</button>
-              </>):(<button style={S.btn} onClick={()=>craftOne(c)}>Craft resume</button>)}
+              </>):(()=>{const loading=craftingId===c.id;return(<button style={{...S.btn,opacity:loading?0.7:1,cursor:loading?"default":"pointer"}} disabled={loading||craftingAll} onClick={()=>craftOne(c)}>{loading&&<Spinner size={12} color="#fff"/>}{loading?"Crafting…":"Craft resume"}</button>);})()}
             </div>
           </div>
         </div>
@@ -1159,6 +1259,11 @@ export default function ScorCraft(){
             <div style={{fontSize:15,fontWeight:700,color:NAVY}}>Download: {c.name}</div>
             <div style={{fontSize:11,color:"#9CA3AF"}}>{preCraft?"Scorecard only — craft the resume to unlock resume & combined downloads":(maskPI?"PI will be masked in output":"PI included in output")}</div>
           </div>
+          {downloading&&(
+            <div style={{margin:"14px 18px 0",display:"flex",alignItems:"center",gap:8,background:"#EEF2FF",border:"1px solid #C7D2FE",borderRadius:8,padding:"9px 12px",fontSize:12,color:INDIGO,fontWeight:600}}>
+              <Spinner color={INDIGO}/> Generating your document… This may take a few seconds.
+            </div>
+          )}
           <div style={{padding:18}}>
             {options.map(opt=>(
               <div key={opt.label} style={{background:"#F9FAFB",border:"1px solid #E5E7EB",borderRadius:8,padding:12,marginBottom:8}}>
@@ -1167,10 +1272,17 @@ export default function ScorCraft(){
                   <div><div style={{fontSize:13,fontWeight:600,color:"#1F2937"}}>{opt.label}</div><div style={{fontSize:11,color:"#6B7280"}}>{opt.sub}</div></div>
                 </div>
                 <div style={{display:"flex",gap:6,marginLeft:24}}>
-                  {opt.formats.map(f=>(
-                    <button key={f} style={{padding:"5px 14px",background:f==="PDF"?"#DC2626":"#2563EB",color:"#fff",border:"none",borderRadius:5,fontSize:11,fontWeight:600,cursor:"pointer"}}
-                      onClick={()=>doDownload(c,opt.label,f)}>{f}</button>
-                  ))}
+                  {opt.formats.map(f=>{
+                    const isLoading=downloading===`${opt.label}-${f}`;
+                    const anyLoading=!!downloading;
+                    return(
+                      <button key={f} disabled={anyLoading}
+                        style={{padding:"5px 14px",background:f==="PDF"?"#DC2626":"#2563EB",color:"#fff",border:"none",borderRadius:5,fontSize:11,fontWeight:600,cursor:anyLoading?"default":"pointer",opacity:anyLoading&&!isLoading?0.5:1,display:"inline-flex",alignItems:"center",gap:6}}
+                        onClick={()=>doDownload(c,opt.label,f)}>
+                        {isLoading&&<Spinner size={11} color="#fff"/>}{isLoading?"Preparing…":f}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -1209,6 +1321,7 @@ export default function ScorCraft(){
       {viewScorecard&&renderScorecardModal()}
       {editCandidate&&renderEditor()}
       {downloadModal&&renderDownloadModal()}
+      <Toast toast={toast}/>
     </div>
   );
 }
@@ -1216,7 +1329,7 @@ export default function ScorCraft(){
 // ═══════════════════════════════════════════════════════════════════
 // CANDIDATE ROW
 // ═══════════════════════════════════════════════════════════════════
-function CandidateRow({c,job,cutoff,selected,masked,logoUrl,onToggle,onCraft,onViewScorecard,onDownload}){
+function CandidateRow({c,job,cutoff,selected,masked,logoUrl,downloading,onToggle,onCraft,onViewScorecard,onDownload}){
   const[expanded,setExpanded]=useState(false);
   const above=c.score>=cutoff;
   const email=masked?"••••••@••••.com":c.email;
@@ -1289,7 +1402,7 @@ function CandidateRow({c,job,cutoff,selected,masked,logoUrl,onToggle,onCraft,onV
           <div style={{display:"flex",gap:6}}>
             <button style={S.btnO} onClick={e=>{e.stopPropagation();onViewScorecard();}}>View scorecard</button>
             {above&&<button style={S.btnG} onClick={e=>{e.stopPropagation();onCraft();}}>Craft resume →</button>}
-            <button style={S.btnO} onClick={e=>{e.stopPropagation();onDownload();}}>Download scorecard</button>
+            <button style={{...S.btnO,opacity:downloading?0.6:1,cursor:downloading?"default":"pointer",display:"inline-flex",alignItems:"center",gap:6}} disabled={downloading} onClick={e=>{e.stopPropagation();onDownload();}}>{downloading&&<Spinner size={11} color="#6B7280"/>}{downloading?"Preparing…":"Download scorecard"}</button>
           </div>
         </div>
       )}

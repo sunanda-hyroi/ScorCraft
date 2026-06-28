@@ -233,18 +233,20 @@ def _logo_flowable(logo, max_h=40, max_w=None):
 
 
 # Banner geometry: a thin branded strip on the first page only.
-_BANNER_H = 1.5 * cm        # overall strip height
-_BANNER_LOGO_H = 30         # max logo height (points ≈ px), aspect preserved
-_BANNER_LEFT_W = 6 * cm     # left column reserved for the logo
+_BANNER_H = 1.6 * cm        # overall strip height (a touch taller for the logo)
+_BANNER_LOGO_H = 35         # max logo height (points ≈ px), aspect preserved
+_BANNER_LOGO_W = 180        # max logo width (points ≈ px), aspect preserved
+_BANNER_LEFT_W = 6.6 * cm   # left column reserved for the logo (fits 180px)
 
 
 def _brand_banner(styles, logo, company_name, company_tagline):
     """Thin branded banner strip for the FIRST page only:
       • light-gray (#F8FAFC) background, thin gold (#C8963E) bottom border
-      • company logo at the left (max 30px tall, aspect preserved)
+      • company logo at the left (max 35px tall / 180px wide, aspect preserved)
       • company name + tagline at the right (navy, right-aligned, 9pt)
     Renders even without a logo (text-only). Returns a single Table flowable."""
-    logo_img = _logo_flowable(logo, max_h=_BANNER_LOGO_H, max_w=_BANNER_LEFT_W - 16)
+    logo_img = _logo_flowable(
+        logo, max_h=_BANNER_LOGO_H, max_w=min(_BANNER_LOGO_W, _BANNER_LEFT_W - 16))
 
     name = company_name or "HYROI Solutions"
     text = f'<font size="9" color="{_hex(NAVY)}"><b>{name}</b></font>'

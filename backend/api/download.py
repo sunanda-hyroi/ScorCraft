@@ -8,6 +8,7 @@ Options:
 Action items are NEVER included in downloads — they're internal-only.
 """
 import logging
+import time
 import traceback
 
 from fastapi import APIRouter, HTTPException, Header
@@ -43,18 +44,91 @@ def _get_user(authorization: Optional[str]) -> str:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+# ── Performance caches ───────────────────────────────────────
+# 1. In-process logo cache. The SAME logo file was being downloaded from
+#    Storage on every single download (and several times within one combined
+#    download). Caching the bytes for the process lifetime removes that
+#    per-download round-trip entirely. Keyed by storage path.
+_LOGO_CACHE: dict = {}
+
+# 2. Rendered-document cache. PDFs/combined-DOCX were regenerated from scratch
+#    on every download (the slow path). Once rendered, the bytes are stored in
+#    the formatted bucket under cache/ keyed by craft_id + kind, so a repeat
+#    download is a single file serve instead of a full regeneration. The cache
+#    is invalidated when a craft is edited (api/crafting.update_crafted_resume
+#    calls invalidate_craft_cache). Output is deterministic per (craft_id, kind)
+#    because every download uses the craft_settings stored on the craft record.
+_CACHE_DIR = "cache"
+# (kind → file extension) for the cacheable download kinds.
+_CACHE_KINDS = {
+    "docx": "docx",
+    "resume-pdf": "pdf",
+    "scorecard-pdf": "pdf",
+    "combined-pdf": "pdf",
+    "combined-docx": "docx",
+}
+
+
+def _cache_key(craft_id: str, kind: str) -> str:
+    return f"{_CACHE_DIR}/{craft_id}.{kind}.{_CACHE_KINDS[kind]}"
+
+
+def _serve_cached(craft_id: str, kind: str) -> Optional[bytes]:
+    """Return the cached document bytes if present, else None."""
+    try:
+        content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(
+            _cache_key(craft_id, kind))
+        if content:
+            logger.info("[PERF] cache HIT for %s/%s (%d bytes)", craft_id, kind, len(content))
+            return content
+    except Exception:
+        pass  # cache miss is normal — fall through to regeneration
+    return None
+
+
+def _store_cached(craft_id: str, kind: str, content: bytes, content_type: str) -> None:
+    """Best-effort: persist a rendered document so future downloads serve it
+    instead of regenerating. Never raises — a failed cache write must not break
+    the download that's already succeeded."""
+    path = _cache_key(craft_id, kind)
+    bucket = supabase.storage.from_(settings.FORMATTED_BUCKET)
+    try:
+        try:
+            bucket.remove([path])  # storage3 needs a clear path before re-upload
+        except Exception:
+            pass
+        bucket.upload(path, content, {"content-type": content_type, "x-upsert": "true"})
+    except Exception as e:
+        logger.warning("Cache store failed for %s (%s)", path, e)
+
+
+def invalidate_craft_cache(craft_id: str) -> None:
+    """Drop every cached rendering for a craft. Called after an edit so the next
+    download regenerates from the updated structured_data."""
+    paths = [_cache_key(craft_id, k) for k in _CACHE_KINDS]
+    try:
+        supabase.storage.from_(settings.FORMATTED_BUCKET).remove(paths)
+        logger.info("Invalidated rendered-document cache for craft %s", craft_id)
+    except Exception as e:
+        logger.info("Cache invalidation skipped for %s (%s)", craft_id, e)
+
+
 def _fetch_logo_bytes(logo_path: Optional[str]) -> Optional[bytes]:
     """Download the user's uploaded logo for the PDF footer. The logo lives in
     the formatted-resumes bucket (path: logos/{user_id}_logo.png), saved there
     by the Craft Settings UI. If no logo was uploaded (logo_path is null) or it
     can't be fetched, return None so the footer renders company text only — a
-    missing logo must never break a download."""
+    missing logo must never break a download. The bytes are cached in-process so
+    repeated downloads don't re-hit Storage."""
     if not logo_path:
         logger.info("Logo fetch: craft_settings has no logo_storage_path — rendering without logo")
         return None
+    if logo_path in _LOGO_CACHE:
+        return _LOGO_CACHE[logo_path]
     try:
         content = supabase.storage.from_(settings.FORMATTED_BUCKET).download(logo_path)
         if content:
+            _LOGO_CACHE[logo_path] = content
             logger.info("Logo fetch: '%s' from bucket '%s' OK (%d bytes)",
                         logo_path, settings.FORMATTED_BUCKET, len(content))
         else:
@@ -80,12 +154,19 @@ def _company_kwargs(craft_settings: dict) -> dict:
     }
 
 
-def _fetch_craft_and_score(craft_id: str) -> tuple:
-    """Fetch crafted resume and its associated score data."""
+def _fetch_craft(craft_id: str) -> dict:
+    """Fetch just the crafted_resumes record (single query). Enough for the
+    resume-only downloads, which don't touch the score/job at all."""
     craft_res = supabase.table("crafted_resumes").select("*").eq("id", craft_id).execute()
     if not craft_res.data:
         raise HTTPException(status_code=404, detail="Crafted resume not found")
-    craft = craft_res.data[0]
+    return craft_res.data[0]
+
+
+def _fetch_craft_and_score(craft_id: str) -> tuple:
+    """Fetch crafted resume + its score (with candidate, one join) + its job.
+    Three round-trips, needed only by the scorecard/combined downloads."""
+    craft = _fetch_craft(craft_id)
 
     score_res = supabase.table("scores").select(
         "*, candidates(*)"
@@ -247,22 +328,32 @@ async def download_resume_pdf(
 ):
     """Download crafted resume as PDF (without scorecard)."""
     try:
+        t0 = time.time()
         _get_user(authorization)
-        craft, score, job = _fetch_craft_and_score(craft_id)
+
+        cached = _serve_cached(craft_id, "resume-pdf")
+        craft = _fetch_craft(craft_id)
+        logger.info("[PERF] resume-pdf DB query: %.2fs", time.time() - t0)
 
         structured_data = craft.get("structured_data") or {}
         craft_settings = craft.get("craft_settings") or {}
 
-        pdf_bytes = generate_resume_pdf(
-            data=structured_data,
-            mask_contacts=craft_settings.get("mask_pi", False),
-            **_company_kwargs(craft_settings),
-        )
+        if cached is not None:
+            pdf_bytes = cached
+        else:
+            pdf_bytes = generate_resume_pdf(
+                data=structured_data,
+                mask_contacts=craft_settings.get("mask_pi", False),
+                **_company_kwargs(craft_settings),
+            )
+            logger.info("[PERF] resume-pdf PDF generation: %.2fs", time.time() - t0)
+            _store_cached(craft_id, "resume-pdf", pdf_bytes, "application/pdf")
 
         candidate_info = structured_data.get("candidate_info") or {}
         candidate_name = candidate_info.get("full_name") or "resume"
         safe_name = candidate_name.encode("ascii", "ignore").decode("ascii").strip() or "resume"
 
+        logger.info("[PERF] resume-pdf total: %.2fs", time.time() - t0)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -283,34 +374,43 @@ async def download_scorecard_pdf(
 ):
     """Download ScorQ scorecard as PDF (matches existing ScorQ format)."""
     try:
+        t0 = time.time()
         _get_user(authorization)
+
+        cached = _serve_cached(craft_id, "scorecard-pdf")
         craft, score, job = _fetch_craft_and_score(craft_id)
+        logger.info("[PERF] scorecard-pdf DB query: %.2fs", time.time() - t0)
 
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
         structured_data = craft.get("structured_data") or {}
-        logo_path = _fetch_logo_bytes(craft_settings.get("logo_storage_path"))
 
-        # Apply PI masking to scorecard if enabled
-        mask = craft_settings.get("mask_pi", False)
-
-        pdf_bytes = generate_scorecard_pdf(
-            candidate_name=candidate.get("name", "Unknown"),
-            candidate_email=None if mask else candidate.get("email"),
-            candidate_phone=None if mask else candidate.get("phone"),
-            overall_score=score.get("overall_score", 0),
-            category_scores=score.get("category_scores", {}),
-            matched_skills=score.get("matched_skills", []),
-            missing_skills=score.get("missing_skills", []),
-            highlights=score.get("highlights", []),
-            red_flags=score.get("red_flags", []),
-            ai_reasoning=score.get("ai_reasoning", ""),
-            job_title=job.get("title", ""),
-            logo_path=logo_path,
-            certifications=structured_data.get("certifications"),
-        )
+        if cached is not None:
+            pdf_bytes = cached
+        else:
+            logo_path = _fetch_logo_bytes(craft_settings.get("logo_storage_path"))
+            # Apply PI masking to scorecard if enabled
+            mask = craft_settings.get("mask_pi", False)
+            pdf_bytes = generate_scorecard_pdf(
+                candidate_name=candidate.get("name", "Unknown"),
+                candidate_email=None if mask else candidate.get("email"),
+                candidate_phone=None if mask else candidate.get("phone"),
+                overall_score=score.get("overall_score", 0),
+                category_scores=score.get("category_scores", {}),
+                matched_skills=score.get("matched_skills", []),
+                missing_skills=score.get("missing_skills", []),
+                highlights=score.get("highlights", []),
+                red_flags=score.get("red_flags", []),
+                ai_reasoning=score.get("ai_reasoning", ""),
+                job_title=job.get("title", ""),
+                logo_path=logo_path,
+                certifications=structured_data.get("certifications"),
+            )
+            logger.info("[PERF] scorecard-pdf PDF generation: %.2fs", time.time() - t0)
+            _store_cached(craft_id, "scorecard-pdf", pdf_bytes, "application/pdf")
 
         safe_name = (candidate.get("name") or "scorecard").encode("ascii", "ignore").decode("ascii").strip() or "scorecard"
+        logger.info("[PERF] scorecard-pdf total: %.2fs", time.time() - t0)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -334,34 +434,44 @@ async def download_combined_pdf(
     Action items are NOT included — they're internal-only.
     """
     try:
+        t0 = time.time()
         _get_user(authorization)
+
+        cached = _serve_cached(craft_id, "combined-pdf")
         craft, score, job = _fetch_craft_and_score(craft_id)
+        logger.info("[PERF] combined-pdf DB query: %.2fs", time.time() - t0)
 
         structured_data = craft.get("structured_data") or {}
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
         mask = craft_settings.get("mask_pi", False)
 
-        pdf_bytes = generate_combined_pdf(
-            # Resume data
-            resume_data=structured_data,
-            mask_contacts=mask,
-            # Scorecard data
-            candidate_name=candidate.get("name", "Unknown"),
-            candidate_email=None if mask else candidate.get("email"),
-            candidate_phone=None if mask else candidate.get("phone"),
-            overall_score=score.get("overall_score", 0),
-            category_scores=score.get("category_scores", {}),
-            matched_skills=score.get("matched_skills", []),
-            missing_skills=score.get("missing_skills", []),
-            highlights=score.get("highlights", []),
-            red_flags=score.get("red_flags", []),
-            ai_reasoning=score.get("ai_reasoning", ""),
-            job_title=job.get("title", ""),
-            **_company_kwargs(craft_settings),
-        )
+        if cached is not None:
+            pdf_bytes = cached
+        else:
+            pdf_bytes = generate_combined_pdf(
+                # Resume data
+                resume_data=structured_data,
+                mask_contacts=mask,
+                # Scorecard data
+                candidate_name=candidate.get("name", "Unknown"),
+                candidate_email=None if mask else candidate.get("email"),
+                candidate_phone=None if mask else candidate.get("phone"),
+                overall_score=score.get("overall_score", 0),
+                category_scores=score.get("category_scores", {}),
+                matched_skills=score.get("matched_skills", []),
+                missing_skills=score.get("missing_skills", []),
+                highlights=score.get("highlights", []),
+                red_flags=score.get("red_flags", []),
+                ai_reasoning=score.get("ai_reasoning", ""),
+                job_title=job.get("title", ""),
+                **_company_kwargs(craft_settings),
+            )
+            logger.info("[PERF] combined-pdf PDF generation: %.2fs", time.time() - t0)
+            _store_cached(craft_id, "combined-pdf", pdf_bytes, "application/pdf")
 
         safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
+        logger.info("[PERF] combined-pdf total: %.2fs", time.time() - t0)
         return Response(
             content=pdf_bytes,
             media_type="application/pdf",
@@ -388,13 +498,26 @@ async def download_combined_docx(
     Action items are NOT included — they're internal-only.
     """
     try:
+        t0 = time.time()
         _get_user(authorization)
+
+        cached = _serve_cached(craft_id, "combined-docx")
         craft, score, job = _fetch_craft_and_score(craft_id)
+        logger.info("[PERF] combined-docx DB query: %.2fs", time.time() - t0)
 
         structured_data = craft.get("structured_data") or {}
         candidate = score.get("candidates") or {}
         craft_settings = craft.get("craft_settings") or {}
         mask = craft_settings.get("mask_pi", False)
+
+        if cached is not None:
+            safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
+            logger.info("[PERF] combined-docx total (cached): %.2fs", time.time() - t0)
+            return Response(
+                content=cached,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers={"Content-Disposition": f'attachment; filename="{safe_name}_scorcraft.docx"'},
+            )
 
         scorecard = {
             "candidate_name": candidate.get("name", "Unknown"),
@@ -418,8 +541,12 @@ async def download_combined_docx(
             include_header=craft_settings.get("include_header", True),
             include_footer=craft_settings.get("include_footer", True),
         )
+        logger.info("[PERF] combined-docx generation: %.2fs", time.time() - t0)
+        _store_cached(craft_id, "combined-docx", docx_bytes,
+                      "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 
         safe_name = (candidate.get("name") or "candidate").encode("ascii", "ignore").decode("ascii").strip() or "candidate"
+        logger.info("[PERF] combined-docx total: %.2fs", time.time() - t0)
         return Response(
             content=docx_bytes,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
