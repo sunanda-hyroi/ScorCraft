@@ -1,0 +1,8 @@
+node_modules/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Saved authenticated session — contains a real Supabase access token. Never commit.
+.auth/
