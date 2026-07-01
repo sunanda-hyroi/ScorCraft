@@ -60,6 +60,42 @@ test("J1: create job via UI", async ({ page }) => {
   await expect(page.getByText(title, { exact: true })).toBeVisible({ timeout: 30_000 });
 });
 
+test("J2: manual skill alias — add, persists, reopens", async ({ page }) => {
+  await gotoDashboard(page);
+  const title = uniqueTitle("PW Alias");
+  await page.getByRole("button", { name: /Create (new|your first) job/ }).click();
+  await page.getByPlaceholder("e.g. Senior Power BI Developer").fill(title);
+
+  const skillInput = page.getByPlaceholder(/Type a skill and press Enter/);
+  await skillInput.fill("Operating System");
+  await skillInput.press("Enter");
+  await expect(page.getByText("Operating System", { exact: true }).first()).toBeVisible();
+
+  // The "+ alias" button is reachable even with the AI suggestion panel open.
+  await page.getByTitle(/Add a custom alias/).click();
+  const aliasInput = page.getByPlaceholder("Type alias, Enter to add");
+  await aliasInput.fill("OS");
+  await aliasInput.press("Enter");
+  // Chip appears immediately with a "manual" tag.
+  await expect(page.getByText("manual", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: /Save Job/ }).click();
+  await expect(page.getByText(title, { exact: true })).toBeVisible({ timeout: 30_000 });
+
+  // Reopen via Duplicate (edit-as-new-version) — the manual alias must still be there.
+  const card = page
+    .locator("div")
+    .filter({ hasText: title })
+    .filter({ has: page.getByRole("button", { name: "Job actions" }) })
+    .last();
+  await card.getByRole("button", { name: "Job actions" }).click();
+  await page.getByRole("button", { name: "📑 Duplicate" }).click();
+  await expect(page.getByPlaceholder("e.g. Senior Power BI Developer")).toHaveValue(`${title} v2`, {
+    timeout: 15_000,
+  });
+  await expect(page.getByText("manual", { exact: true }).first()).toBeVisible();
+});
+
 test("J4: job list displays card details", async ({ page }) => {
   await gotoDashboard(page);
   const card = jobCard(page, jobRead);

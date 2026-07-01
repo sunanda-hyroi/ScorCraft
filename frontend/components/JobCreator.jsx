@@ -503,8 +503,11 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
                     />
                   )}
 
-                  {showAlias !== skill && (
-                    <div className="flex items-center gap-1.5 px-1 flex-wrap">
+                  {/* Chip row (AI aliases, equivalents, manual aliases, "+ alias")
+                      is ALWAYS visible — even while the AI suggestion panel is
+                      open above it — so the recruiter can add a manual alias
+                      right after adding a skill without dismissing anything. */}
+                  <div className="flex items-center gap-1.5 px-1 flex-wrap">
                       {/* AI aliases — same skill, different name (navy) */}
                       {skillAliases[skill]?.map((a) => (
                         <span
@@ -559,23 +562,24 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
                       ) : (
                         <button
                           onClick={() => { setAliasInputFor(skill); setAliasDraft(""); }}
-                          title="Add a custom alias"
-                          className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-[#4338CA]/50 text-[#4338CA] hover:bg-[#4338CA]/10 text-xs font-bold leading-none"
+                          title="Add a custom alias the AI missed (e.g. OS for Operating System)"
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-[#4338CA]/50 text-[#4338CA] hover:bg-[#4338CA]/10 text-[10px] font-semibold leading-none"
                         >
-                          +
+                          <span className="text-xs font-bold leading-none">+</span> alias
                         </button>
                       )}
-                      {/* AI suggestion panel toggle */}
-                      <button
-                        onClick={() => setShowAlias(skill)}
-                        className="text-[10px] text-[#1A2744]/70 hover:text-[#1A2744] hover:underline"
-                      >
-                        {skillAliases[skill]?.length > 0 || skillEquivalents[skill]?.length > 0
-                          ? "edit"
-                          : "suggest aliases"}
-                      </button>
+                      {/* AI suggestion panel toggle — hidden while the panel is open */}
+                      {showAlias !== skill && (
+                        <button
+                          onClick={() => setShowAlias(skill)}
+                          className="text-[10px] text-[#1A2744]/70 hover:text-[#1A2744] hover:underline"
+                        >
+                          {skillAliases[skill]?.length > 0 || skillEquivalents[skill]?.length > 0
+                            ? "edit"
+                            : "suggest aliases"}
+                        </button>
+                      )}
                     </div>
-                  )}
                 </div>
               ))}
             </div>

@@ -143,24 +143,31 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, on
           placeholder="🔍 Search by title or company…"
           className="flex-1 min-w-[220px] border border-gray-200 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-[#1A2744]"
         />
-        <select
-          value={creators.includes(creator) || creator === ALL_USERS ? creator : ALL_USERS}
-          onChange={(e) => { setCreator(e.target.value); setPage(1); }}
-          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#1A2744] bg-white"
-          aria-label="Filter by creator"
-        >
-          <option value={ALL_USERS}>Created by: {ALL_USERS}</option>
-          {creators.map((n) => (
-            <option key={n} value={n}>Created by: {n}{n === currentUserName ? " (me)" : ""}</option>
-          ))}
-        </select>
-        <select
-          value={sort}
-          onChange={(e) => setSort(e.target.value)}
-          className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#1A2744] bg-white"
-        >
-          {SORTS.map((s) => <option key={s.key} value={s.key}>Sort: {s.label}</option>)}
-        </select>
+        <label className="flex items-center gap-2 shrink-0">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Created by</span>
+          <select
+            value={creators.includes(creator) || creator === ALL_USERS ? creator : ALL_USERS}
+            onChange={(e) => { setCreator(e.target.value); setPage(1); }}
+            className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#1A2744] bg-white"
+            aria-label="Filter by creator"
+          >
+            <option value={ALL_USERS}>{ALL_USERS}</option>
+            {creators.map((n) => (
+              <option key={n} value={n}>{n}{n === currentUserName ? " (me)" : ""}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 shrink-0">
+          <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide whitespace-nowrap">Sort by</span>
+          <select
+            value={sort}
+            onChange={(e) => setSort(e.target.value)}
+            className="border border-gray-200 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:border-[#1A2744] bg-white"
+            aria-label="Sort jobs"
+          >
+            {SORTS.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
+          </select>
+        </label>
       </div>
 
       {/* Filter tabs */}
