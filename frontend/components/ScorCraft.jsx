@@ -9,10 +9,16 @@ import JobDashboard from "@/components/JobDashboard";
 import {
   scoreResultToCandidate,
   dbScoreRowToCandidate,
+  dbCraftRowToCraftResult,
   applyCraftResult,
   candidateToStructured,
   craftSettingsFrom,
 } from "@/lib/mappers";
+
+// Persist the active job + workflow step so a page reload resumes where the
+// recruiter left off (Feature 1). sessionStorage (not localStorage) so it's
+// scoped to the tab and cleared when the tab closes.
+const SESSION_KEY = "scorcraft_workflow";
 
 // ─── Colors ──────────────────────────────────────────────────────
 const NAVY = "#1A2744";
@@ -436,6 +442,8 @@ function ResumePreview({c,masked,letterhead,logoUrl,includeHeader=true,includeFo
 // ═══════════════════════════════════════════════════════════════════
 export default function ScorCraft(){
   const[step,setStep]=useState("job");
+  const[scoringActive,setScoringActive]=useState(false); // true ONLY during an active scoring API call (Feature 3)
+  const[resumeBanner,setResumeBanner]=useState(false);   // "N previously scored" banner on the results step (Feature 1)
   const[candidates,setCandidates]=useState([]);
   const[selected,setSelected]=useState(new Set());
   const[scoreRange,setScoreRange]=useState([0,100]);
@@ -470,6 +478,7 @@ export default function ScorCraft(){
   const[downloading,setDownloading]=useState(null);    // active download key (button loading)
   const[toast,setToast]=useState(null);                // transient success/error notice
   const resumeRef=useRef(null);                        // hidden resume file input
+  const hydratedRef=useRef(false);                     // true once the mount restore has run (gates session persistence)
 
   // Show a transient toast (auto-dismiss). type: "success" | "error".
   const showToast=useCallback((msg,type="success")=>{
@@ -526,6 +535,7 @@ export default function ScorCraft(){
   const[editingJob,setEditingJob]=useState(null);     // job being edited
   const[duplicatingJob,setDuplicatingJob]=useState(null); // job being duplicated
   const[jobBusy,setJobBusy]=useState("");             // dashboard status message
+  const[confirmDelete,setConfirmDelete]=useState(null); // {job,scored,crafted} → delete warning dialog (Feature 5)
   // Job create/edit/duplicate/archive/delete handlers are defined below, after
   // fallbackToDemo/loadJobResults/selectJob (they depend on those callbacks).
 
@@ -552,23 +562,36 @@ export default function ScorCraft(){
     if(err) console.warn("[ScorCraft] live call failed → demo mode:",err?.message||err);
   },[]);
 
-  // Reload a job's previously scored candidates from the backend. Lets a
-  // recruiter reopen the app (or switch jobs) and pick up where they left off
-  // without re-scoring. Returns the loaded count.
+  // Reload a job's previously scored candidates from the backend, merged with any
+  // crafted resumes so already-crafted candidates keep their Crafted badge /
+  // Edit / Download actions after a reload (Feature 1). Lets a recruiter reopen
+  // the app (or switch jobs) and pick up where they left off without re-scoring.
+  // Returns the mapped candidate array (empty on failure).
   const loadJobResults=useCallback(async(jobId)=>{
-    if(!jobId)return 0;
+    if(!jobId)return [];
     try{
-      const rows=await api.getResults(jobId);
-      const mapped=(rows||[]).map(dbScoreRowToCandidate).sort((a,b)=>b.score-a.score);
+      const[rows,crafted]=await Promise.all([
+        api.getResults(jobId),
+        api.getCraftedForJob(jobId).catch(()=>[]), // crafted is best-effort
+      ]);
+      const craftByScore=new Map((crafted||[]).map(cr=>[cr.score_id,cr]));
+      const mapped=(rows||[]).map(dbScoreRowToCandidate).sort((a,b)=>b.score-a.score)
+        .map(c=>{
+          const cr=craftByScore.get(c.scoreId);
+          return cr?applyCraftResult(c,dbCraftRowToCraftResult(cr)):c;
+        });
       setCandidates(mapped);
-      return mapped.length;
+      return mapped;
     }catch(e){
       fallbackToDemo(e);
-      return 0;
+      return [];
     }
   },[fallbackToDemo]);
 
-  // On mount: probe backend; if configured, load live jobs + their results.
+  // On mount: probe backend; if configured, load live jobs and restore the last
+  // workflow (active job + step) from sessionStorage so a reload resumes where
+  // the recruiter left off (Feature 1). Scoring is never resumed into the
+  // progress screen — it maps to the results step (Feature 3).
   useEffect(()=>{
     let cancelled=false;
     (async()=>{
@@ -581,22 +604,67 @@ export default function ScorCraft(){
           const js=await api.listJobs();
           if(cancelled)return;
           setJobs(js);
-          if(js.length){
+
+          let saved=null;
+          try{saved=JSON.parse(window.sessionStorage.getItem(SESSION_KEY)||"null");}catch{/* ignore */}
+          const savedJob=saved?.jobId?js.find(j=>j.id===saved.jobId):null;
+
+          if(savedJob){
+            setActiveJob(savedJob);
+            const mapped=await loadJobResults(savedJob.id);
+            if(cancelled)return;
+            let s=saved.step||"job";
+            if(s==="scoring")s="results";                     // Feature 3 — never resume the progress screen
+            if((s==="results"||s==="craft")&&mapped.length===0)s="upload";
+            if(s==="craft")setCraftQueue(mapped);              // rehydrate the craft queue (crafted-merged)
+            setStep(s);
+          }else if(js.length){
             setActiveJob(js[0]);
             await loadJobResults(js[0].id);
           }
         }
       }catch(e){fallbackToDemo(e);}
-      finally{if(!cancelled)setJobsLoading(false);}
+      finally{if(!cancelled){setJobsLoading(false);hydratedRef.current=true;}}
     })();
     return()=>{cancelled=true;};
   },[fallbackToDemo,loadJobResults]);
 
-  // Switch the active live job and reload its persisted scores.
-  const selectJob=useCallback((job)=>{
+  // Persist the active job + step to sessionStorage whenever they change (live
+  // mode only). "scoring" is transient — persist it as "results" so a mid-scoring
+  // reload lands on results, never the progress animation (Feature 3). Gated on
+  // hydratedRef so the initial render doesn't clobber the saved session before
+  // the async mount-restore has had a chance to read it.
+  useEffect(()=>{
+    if(typeof window==="undefined"||demoMode||!hydratedRef.current)return;
+    try{
+      if(activeJob?.id){
+        const persistStep=step==="scoring"?"results":step;
+        window.sessionStorage.setItem(SESSION_KEY,JSON.stringify({jobId:activeJob.id,step:persistStep}));
+      }else{
+        window.sessionStorage.removeItem(SESSION_KEY);
+      }
+    }catch{/* ignore */}
+  },[activeJob,step,demoMode]);
+
+  // Belt-and-suspenders (Feature 3): if we ever land on the scoring step while no
+  // scoring is actually running and results already exist, bounce to results
+  // instead of showing the progress animation.
+  useEffect(()=>{
+    if(step==="scoring"&&!scoringActive&&candidates.length){setStep("results");}
+  },[step,scoringActive,candidates.length]);
+
+  // Open a job from the dashboard (Feature 1). If it already has scored
+  // candidates, skip straight to Review & Filter and offer to upload more or
+  // view results; otherwise go to the upload step.
+  const openJob=useCallback(async(job)=>{
     setActiveJob(job);
     setSelected(new Set());
-    if(!demoMode&&job?.id)loadJobResults(job.id);
+    setCraftQueue([]);
+    setResumeBanner(false);
+    if(demoMode||!job?.id){setStep("upload");return;}
+    const mapped=await loadJobResults(job.id);
+    if(mapped.length){setResumeBanner(true);setStep("results");}
+    else{setStep("upload");}
   },[demoMode,loadJobResults]);
 
   // ── Job dashboard: reload + create/edit/duplicate/archive/delete ──
@@ -624,27 +692,51 @@ export default function ScorCraft(){
 
   const handleEditJob=useCallback((job)=>{setDuplicatingJob(null);setEditingJob(job);},[]);
   const handleDuplicateJob=useCallback((job)=>{setEditingJob(null);setDuplicatingJob(job);},[]);
+  // Archive is reversible → apply immediately, no confirmation (Feature 5).
   const handleArchiveJob=useCallback(async(job)=>{
     setJobBusy(`Archiving “${job.title}”…`);
-    try{await api.archiveJob(job.id);await reloadJobs();}
-    catch(e){fallbackToDemo(e);}
+    try{await api.archiveJob(job.id);await reloadJobs();showToast("Job archived");}
+    catch(e){if(e?.name!=="DemoModeError")showToast(e?.message||"Archive failed","error");else fallbackToDemo(e);}
     setJobBusy("");
-  },[reloadJobs,fallbackToDemo]);
-  const handleDeleteJob=useCallback(async(job)=>{
-    const scored=job.candidates_scored_count||0;
-    if(scored>0){
-      window.alert(`“${job.title}” has ${scored} scored candidate(s). Archive it instead of deleting to preserve those scores.`);
-      return;
-    }
-    if(!window.confirm(`Permanently delete “${job.title}”? This cannot be undone.`))return;
+  },[reloadJobs,fallbackToDemo,showToast]);
+
+  // Un-archive → reactivate an archived job so work can resume (Feature 5).
+  const handleUnarchiveJob=useCallback(async(job)=>{
+    setJobBusy(`Reactivating “${job.title}”…`);
+    try{await api.unarchiveJob(job.id);await reloadJobs();showToast("Job reactivated");}
+    catch(e){if(e?.name!=="DemoModeError")showToast(e?.message||"Un-archive failed","error");else fallbackToDemo(e);}
+    setJobBusy("");
+  },[reloadJobs,fallbackToDemo,showToast]);
+
+  // Delete no longer forces archive — open a warning dialog and let the recruiter
+  // decide (Feature 5). The dialog copy differs when the job has scored/crafted data.
+  const handleDeleteJob=useCallback((job)=>{
+    setConfirmDelete({
+      job,
+      scored:job.candidates_scored_count||0,
+      crafted:job.crafted_count||0,
+    });
+  },[]);
+
+  // Actually perform the (cascade) delete after the dialog is confirmed.
+  const doDeleteJob=useCallback(async()=>{
+    const job=confirmDelete?.job;
+    if(!job)return;
+    setConfirmDelete(null);
     setJobBusy(`Deleting “${job.title}”…`);
     try{
       await api.deleteJob(job.id);
-      if(activeJob?.id===job.id){setActiveJob(null);setCandidates([]);}
+      if(activeJob?.id===job.id){
+        setActiveJob(null);setCandidates([]);setCraftQueue([]);setStep("job");
+      }
       await reloadJobs();
-    }catch(e){fallbackToDemo(e);}
+      showToast("Job deleted");
+    }catch(e){
+      if(e?.name!=="DemoModeError")showToast(e?.message||"Delete failed. Please try again.","error");
+      else fallbackToDemo(e);
+    }
     setJobBusy("");
-  },[reloadJobs,fallbackToDemo,activeJob]);
+  },[confirmDelete,reloadJobs,fallbackToDemo,activeJob,showToast]);
 
   const jobIdForScoring=activeJob?.id||null;
   const jobTitle=activeJob?.title||"the selected job";
@@ -653,6 +745,11 @@ export default function ScorCraft(){
   const jobForDisplay=activeView||EMPTY_JOB_VIEW;
 
   const runScoring=useCallback(async()=>{
+    // scoringActive gates the progress animation — it's ON only while a scoring
+    // call is genuinely in flight, so navigating back to the Scoring step later
+    // shows results, never the animation (Feature 3).
+    setScoringActive(true);
+    setResumeBanner(false);
     setStep("scoring");setScoringProgress(0);
     // Live path: real files + a real job id + configured backend. This is the
     // only path that produces candidates — scored results come straight from
@@ -663,15 +760,23 @@ export default function ScorCraft(){
       try{
         const resp=await api.scoreBatch(uploadFileObjs,jobIdForScoring,`Batch ${uploadFileObjs.length} resumes`);
         clearInterval(iv);setScoringProgress(100);
-        const mapped=(resp.results||[]).map(scoreResultToCandidate).sort((a,b)=>b.score-a.score);
-        setCandidates(mapped);
+        // Reload the full persisted set (previous scores + this batch, crafted-
+        // merged) so "upload more resumes" APPENDS to existing results instead of
+        // replacing them. Fall back to just this batch if the reload can't run.
+        const full=await loadJobResults(jobIdForScoring);
+        if(!full.length){
+          const mapped=(resp.results||[]).map(scoreResultToCandidate).sort((a,b)=>b.score-a.score);
+          setCandidates(mapped);
+        }
+        // Refresh job counts so the dashboard "N scored" reflects the new scores.
+        reloadJobs();
         // Surface per-file failures (e.g. corrupted/unsupported/too-large) so the
         // recruiter knows some files were skipped instead of silently vanishing.
         if(resp.errors?.length){
           const lines=resp.errors.map(er=>`• ${er.filename}: ${er.error}`).join("\n");
           setUploadErr(`${resp.errors.length} file(s) could not be scored:\n${lines}`);
         }
-        setTimeout(()=>setStep("results"),400);
+        setTimeout(()=>{setScoringActive(false);setStep("results");},400);
         return;
       }catch(e){
         clearInterval(iv);
@@ -681,7 +786,7 @@ export default function ScorCraft(){
           fallbackToDemo(e);
         }else{
           setUploadErr(e?.message||"Scoring failed. Please check your files and try again.");
-          setStep("upload");
+          setScoringActive(false);setStep("upload");
           return;
         }
       }
@@ -689,8 +794,8 @@ export default function ScorCraft(){
     // No live scoring available (demo mode, no job, or no real files) — go to
     // results with whatever has been scored (often nothing → empty state).
     setScoringProgress(100);
-    setTimeout(()=>setStep("results"),400);
-  },[demoMode,jobIdForScoring,uploadFileObjs,fallbackToDemo]);
+    setTimeout(()=>{setScoringActive(false);setStep("results");},400);
+  },[demoMode,jobIdForScoring,uploadFileObjs,fallbackToDemo,reloadJobs,loadJobResults]);
 
   // ── Craft handlers ────────────────────────────────────────────
   const craftSettings=()=>craftSettingsFrom(letterhead,maskPI,logoPath,includeHeader,includeFooter);
@@ -823,6 +928,15 @@ export default function ScorCraft(){
   const steps=[{key:"job",label:"Select job"},{key:"upload",label:"Upload resumes"},{key:"scoring",label:"Scoring"},{key:"results",label:"Review & filter"},{key:"craft",label:"Craft resumes"}];
   const ci=steps.findIndex(s=>s.key===step);
 
+  // Step-bar navigation (Feature 3). Only completed steps are clickable. Clicking
+  // the "Scoring" step when scoring is already done jumps to Review & Filter
+  // instead of replaying the progress animation.
+  const handleStepClick=(key,i)=>{
+    if(i>=ci)return;
+    if(key==="scoring"&&!scoringActive&&candidates.length){setStep("results");return;}
+    setStep(key);
+  };
+
   // ─── Job ───────────────────────────────────────────────────────
   const skillChips=(arr,bg,c)=>arr.length
     ? arr.map(s=><span key={s} style={S.chip(bg,c)}>{s}</span>)
@@ -863,10 +977,11 @@ export default function ScorCraft(){
           jobs={jobs}
           busy={jobBusy}
           currentUserName={currentUserName}
-          onSelect={(job)=>{selectJob(job);setStep("upload");}}
+          onSelect={openJob}
           onCreate={()=>setShowCreateJob(true)}
           onDuplicate={handleDuplicateJob}
           onArchive={handleArchiveJob}
+          onUnarchive={handleUnarchiveJob}
           onDelete={handleDeleteJob}
         />
       </div>
@@ -917,8 +1032,22 @@ export default function ScorCraft(){
         </div>
       </div>
     );
+    const craftedCount=candidates.filter(c=>c.crafted).length;
     return(
     <div style={S.container}>
+      {/* Resume banner (Feature 1) — shown when opening a job that already has
+          previously scored candidates, offering to upload more or continue. */}
+      {resumeBanner&&(
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",background:"#EEF2FF",border:"1px solid #C7D2FE",borderRadius:10,padding:"10px 14px",marginBottom:10}}>
+          <div style={{fontSize:12.5,color:"#3730A3"}}>
+            This job has <strong>{candidates.length}</strong> previously scored candidate{candidates.length===1?"":"s"}{craftedCount>0?<> ({craftedCount} crafted)</>:null}. You can upload more resumes or continue with existing results.
+          </div>
+          <div style={{display:"flex",gap:8,flexShrink:0}}>
+            <button style={S.btnO} onClick={()=>{setResumeBanner(false);setStep("upload");}}>Upload more resumes</button>
+            <button style={S.btn} onClick={()=>setResumeBanner(false)}>View results</button>
+          </div>
+        </div>
+      )}
       {/* Stats */}
       <div style={{display:"flex",gap:10,marginBottom:10}}>
         {[{l:"Total",v:candidates.length,bg:"#F3F4F6",c:"#374151"},{l:`≥ ${cutoff} (above cutoff)`,v:candidates.filter(x=>x.score>=cutoff).length,bg:"#ECFDF5",c:"#059669"},{l:`< ${cutoff} (below cutoff)`,v:candidates.filter(x=>x.score<cutoff).length,bg:"#FEF2F2",c:"#DC2626"}].map(s=>
@@ -1293,6 +1422,36 @@ export default function ScorCraft(){
     );
   };
 
+  // ─── Delete confirmation dialog (Feature 5) ────────────────────
+  // Warn — don't block. A job WITH scored/crafted data gets an explicit
+  // permanent-delete warning; an empty job gets a simple confirm. Either way the
+  // recruiter decides (Archive stays available separately in the kebab menu).
+  const renderDeleteConfirm=()=>{
+    if(!confirmDelete)return null;
+    const {job,scored,crafted}=confirmDelete;
+    const hasData=scored>0||crafted>0;
+    return(
+      <div style={S.modal} onClick={()=>setConfirmDelete(null)}>
+        <div style={{...S.modalBox,maxWidth:460}} onClick={e=>e.stopPropagation()}>
+          <div style={{padding:"18px 22px"}}>
+            <div style={{fontSize:16,fontWeight:700,color:NAVY,marginBottom:8}}>
+              {hasData?"Delete job permanently?":"Delete this job?"}
+            </div>
+            <div style={{fontSize:13,color:"#4B5563",lineHeight:1.65}}>
+              {hasData
+                ?<>This job has <strong>{scored}</strong> scored candidate{scored===1?"":"s"} and <strong>{crafted}</strong> crafted resume{crafted===1?"":"s"}. Deleting will permanently remove <strong>ALL</strong> scores, crafted documents, and uploaded resumes linked to this job. This cannot be undone.</>
+                :<>“{job.title}” will be permanently removed. This cannot be undone.</>}
+            </div>
+          </div>
+          <div style={{padding:"12px 22px",borderTop:"1px solid #E5E7EB",display:"flex",justifyContent:"flex-end",gap:8}}>
+            <button style={S.btnO} onClick={()=>setConfirmDelete(null)}>Cancel</button>
+            <button style={{...S.btn,background:"#DC2626"}} onClick={doDeleteJob}>{hasData?"Delete permanently":"Delete"}</button>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   // ─── Layout ────────────────────────────────────────────────────
   return(
     <div style={S.page}>
@@ -1306,7 +1465,7 @@ export default function ScorCraft(){
           <button onClick={signOut} style={{fontSize:11,fontWeight:600,color:"#fff",background:"rgba(255,255,255,0.12)",border:"1px solid rgba(255,255,255,0.25)",borderRadius:6,padding:"4px 10px",cursor:"pointer"}}>Sign out</button>
         </div>
       </header>
-      <div style={S.stepBar}>{steps.map((s,i)=><div key={s.key} style={S.stepItem(step===s.key,i<ci)} onClick={()=>i<ci?setStep(s.key):null}>{i<ci?"✓ ":""}{s.label}</div>)}</div>
+      <div style={S.stepBar}>{steps.map((s,i)=><div key={s.key} style={S.stepItem(step===s.key,i<ci)} onClick={()=>handleStepClick(s.key,i)}>{i<ci?"✓ ":""}{s.label}</div>)}</div>
       {!configured&&(
         <div style={{background:"#FFFBEB",borderBottom:"1px solid #FDE68A",padding:"7px 24px",fontSize:12,color:"#92400E",display:"flex",alignItems:"center",gap:8}}>
           <span style={{fontWeight:700}}>Demo mode</span>
@@ -1321,6 +1480,7 @@ export default function ScorCraft(){
       {viewScorecard&&renderScorecardModal()}
       {editCandidate&&renderEditor()}
       {downloadModal&&renderDownloadModal()}
+      {confirmDelete&&renderDeleteConfirm()}
       <Toast toast={toast}/>
     </div>
   );

@@ -190,6 +190,8 @@ export interface Job {
   created_by_name?: string | null;
   // Feature 2/3 annotations from GET /api/v1/jobs
   candidates_scored_count?: number;
+  crafted_count?: number;
+  skill_manual_aliases?: Record<string, string[]>;
   version?: number;
   parent_job_id?: string | null;
   previous_versions?: JobVersionRef[];
@@ -311,9 +313,15 @@ export async function archiveJob(jobId: string): Promise<void> {
 }
 
 /** JobDashboard kebab → Delete (hard) → DELETE /api/v1/jobs/:id?hard=true.
- * Backend rejects (409) if candidates were scored against the job. */
+ * Cascades: removes all scores, crafted resumes, sessions, orphan candidates,
+ * and storage files linked to the job (Feature 4). No longer blocked by scores. */
 export async function deleteJob(jobId: string): Promise<void> {
   await request(`/api/v1/jobs/${jobId}?hard=true`, { method: "DELETE" });
+}
+
+/** JobDashboard kebab → Un-archive → POST /api/v1/jobs/:id/unarchive (Feature 5). */
+export async function unarchiveJob(jobId: string): Promise<void> {
+  await request(`/api/v1/jobs/${jobId}/unarchive`, { method: "POST" });
 }
 
 /** JobDashboard → GET /api/v1/jobs/:id (single job, e.g. to view a version) */
@@ -373,6 +381,18 @@ export async function getResults(jobId?: string): Promise<unknown[]> {
   const qs = jobId ? `?job_id=${encodeURIComponent(jobId)}` : "";
   const data = await request<{ results: unknown[] }>(`/api/v1/results${qs}`);
   return data.results || [];
+}
+
+/**
+ * Craft step (Feature 1) → GET /api/v1/craft/job/:jobId
+ * Persisted crafted_resumes for a job, so a reload can restore which candidates
+ * were already crafted (badge + Edit + Download) instead of losing that state.
+ */
+export async function getCraftedForJob(jobId: string): Promise<any[]> {
+  const data = await request<{ crafted: any[] }>(
+    `/api/v1/craft/job/${encodeURIComponent(jobId)}`
+  );
+  return data.crafted || [];
 }
 
 /**

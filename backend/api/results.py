@@ -44,6 +44,25 @@ async def list_results(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/job/{job_id}")
+async def list_results_for_job(
+    job_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """All scores for a job (Feature 1) — dedicated path alias of
+    GET /api/v1/results?job_id=..., returned highest score first."""
+    _get_user(authorization)
+    try:
+        res = supabase.table("scores")\
+            .select("*, candidates(name, email, phone)")\
+            .eq("job_id", job_id)\
+            .order("overall_score", desc=True)\
+            .execute()
+        return {"results": res.data or [], "total": len(res.data or [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/{score_id}")
 async def get_result(
     score_id: str,

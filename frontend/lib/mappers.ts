@@ -165,6 +165,28 @@ export function applyCraftResult(
   };
 }
 
+/**
+ * Persisted `crafted_resumes` DB row → a CraftResult-shaped object so the same
+ * applyCraftResult() merge restores an already-crafted candidate on reload
+ * (Feature 1). Contact fields are left null so applyCraftResult falls back to
+ * the structured_data.candidate_info values (or the existing candidate).
+ */
+export function dbCraftRowToCraftResult(row: any): CraftResult {
+  const info = (row.structured_data || {}).candidate_info || {};
+  return {
+    craft_id: row.id,
+    score_id: row.score_id,
+    candidate_name: info.full_name || "",
+    candidate_email: null,
+    candidate_phone: null,
+    overall_score: 0,
+    structured_data: row.structured_data || {},
+    missing_report: row.missing_report || {},
+    download_url: `/api/v1/download/${row.id}/docx`,
+    status: row.status || "crafted",
+  };
+}
+
 /** UI candidate (after editing) → structured_data for PUT /craft/:id. */
 export function candidateToStructured(c: any): Record<string, unknown> {
   return {

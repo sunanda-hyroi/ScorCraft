@@ -23,6 +23,7 @@ function buildInitialForm(job) {
       title: "", description: "", experience_min: 0, experience_max: 0,
       education_required: "", custom_instructions: "", required_skills: [],
       nice_to_have_skills: [], skill_importance: {}, skill_aliases: {}, skill_equivalents: {},
+      skill_manual_aliases: {},
     };
   }
   let req = Array.isArray(job.required_skills) && job.required_skills.length
@@ -44,6 +45,7 @@ function buildInitialForm(job) {
     education_required: job.education_required || "", custom_instructions: job.custom_instructions || "",
     required_skills: req, nice_to_have_skills: job.nice_to_have_skills || [],
     skill_importance, skill_aliases: job.skill_aliases || {}, skill_equivalents: job.skill_equivalents || {},
+    skill_manual_aliases: job.skill_manual_aliases || {},
   };
 }
 
@@ -63,8 +65,28 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
   // Manual skill input + alias state
   const [skillInput, setSkillInput] = useState("");
   const [showAlias, setShowAlias] = useState(null);
-  const [skillAliases, setSkillAliases] = useState(job?.skill_aliases || {});
+  // AI aliases only — manual aliases are folded into job.skill_aliases when saved,
+  // so strip them back out here (using skill_manual_aliases) to keep the two
+  // groups visually distinct when a saved job is re-opened.
+  const [skillAliases, setSkillAliases] = useState(() => {
+    const ai = { ...(job?.skill_aliases || {}) };
+    const manual = job?.skill_manual_aliases || {};
+    for (const [sk, list] of Object.entries(manual)) {
+      if (Array.isArray(ai[sk]) && Array.isArray(list)) {
+        const drop = new Set(list.map((a) => String(a).toLowerCase()));
+        ai[sk] = ai[sk].filter((a) => !drop.has(String(a).toLowerCase()));
+      }
+    }
+    return ai;
+  });
   const [skillEquivalents, setSkillEquivalents] = useState(job?.skill_equivalents || {});
+
+  // Manual aliases (Feature 2): recruiter-typed aliases the AI missed. Tracked in
+  // form.skill_manual_aliases and folded into skill_aliases server-side so the
+  // technical scorer matches them. `aliasInputFor` = the skill whose inline
+  // "+ add alias" input is currently open.
+  const [aliasInputFor, setAliasInputFor] = useState(null);
+  const [aliasDraft, setAliasDraft] = useState("");
 
   // When duplicating, default the title to the next version (e.g. "Analyst v2")
   // unless the recruiter renames it. Strip any existing trailing " vN" first so
@@ -150,6 +172,38 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
       skill_importance: Object.fromEntries(
         Object.entries(f.skill_importance).filter(([k]) => k !== skill)
       ),
+    }));
+
+  // ── Manual aliases (Feature 2) ───────────────────────────────────────────
+  // Add a recruiter-typed alias for `skill`. De-duped case-insensitively against
+  // existing manual entries AND the AI aliases/equivalents already attached, so
+  // "OperatingSystem" typed twice (or already suggested) won't double up.
+  const addManualAlias = (skill) => {
+    const val = aliasDraft.trim();
+    if (!val) return;
+    const lc = val.toLowerCase();
+    const dupOf = (arr) => (arr || []).some((a) => String(a).toLowerCase() === lc);
+    if (dupOf(form.skill_manual_aliases?.[skill]) || dupOf(skillAliases[skill]) || dupOf(skillEquivalents[skill])) {
+      setAliasDraft("");
+      return;
+    }
+    setForm((f) => ({
+      ...f,
+      skill_manual_aliases: {
+        ...(f.skill_manual_aliases || {}),
+        [skill]: [...(f.skill_manual_aliases?.[skill] || []), val],
+      },
+    }));
+    setAliasDraft(""); // keep the input open so several can be added in a row
+  };
+
+  const removeManualAlias = (skill, alias) =>
+    setForm((f) => ({
+      ...f,
+      skill_manual_aliases: {
+        ...(f.skill_manual_aliases || {}),
+        [skill]: (f.skill_manual_aliases?.[skill] || []).filter((a) => a !== alias),
+      },
     }));
 
   const setImportance = (skill, importance) =>
@@ -449,44 +503,79 @@ export default function JobCreator({ onCreated, onCancel, job = null, duplicate 
                     />
                   )}
 
-                  {showAlias !== skill &&
-                    (skillAliases[skill]?.length > 0 || skillEquivalents[skill]?.length > 0) && (
-                      <div className="flex items-center gap-2 px-1 flex-wrap">
-                        {skillAliases[skill]?.map((a) => (
-                          <span
-                            key={a}
-                            className="text-[10px] bg-[#1A2744]/[0.06] text-[#1A2744] border border-[#1A2744]/15 px-2 py-0.5 rounded-full"
-                          >
-                            {a}
-                          </span>
-                        ))}
-                        {skillEquivalents[skill]?.map((e) => (
-                          <span
-                            key={e}
-                            className="text-[10px] bg-[#C8963E]/10 text-[#8a6320] border border-[#C8963E]/30 px-2 py-0.5 rounded-full"
-                          >
-                            ~{e}
-                          </span>
-                        ))}
-                        <button
-                          onClick={() => setShowAlias(skill)}
-                          className="text-[10px] text-[#1A2744] hover:underline"
+                  {showAlias !== skill && (
+                    <div className="flex items-center gap-1.5 px-1 flex-wrap">
+                      {/* AI aliases — same skill, different name (navy) */}
+                      {skillAliases[skill]?.map((a) => (
+                        <span
+                          key={`a-${a}`}
+                          className="text-[10px] bg-[#1A2744]/[0.06] text-[#1A2744] border border-[#1A2744]/15 px-2 py-0.5 rounded-full"
                         >
-                          edit
+                          {a}
+                        </span>
+                      ))}
+                      {/* AI equivalents — similar skill (gold) */}
+                      {skillEquivalents[skill]?.map((e) => (
+                        <span
+                          key={`e-${e}`}
+                          className="text-[10px] bg-[#C8963E]/10 text-[#8a6320] border border-[#C8963E]/30 px-2 py-0.5 rounded-full"
+                        >
+                          ~{e}
+                        </span>
+                      ))}
+                      {/* Manual aliases — recruiter-added (indigo, "manual" tag) */}
+                      {form.skill_manual_aliases?.[skill]?.map((a) => (
+                        <span
+                          key={`m-${a}`}
+                          className="inline-flex items-center gap-1 text-[10px] bg-[#4338CA]/10 text-[#4338CA] border border-[#4338CA]/40 px-2 py-0.5 rounded-full"
+                        >
+                          {a}
+                          <span className="text-[8px] font-bold uppercase tracking-wide bg-[#4338CA] text-white px-1 rounded-full leading-none py-0.5">
+                            manual
+                          </span>
+                          <button
+                            onClick={() => removeManualAlias(skill, a)}
+                            className="text-[#4338CA]/60 hover:text-red-500 font-bold leading-none"
+                            title="Remove alias"
+                          >
+                            ×
+                          </button>
+                        </span>
+                      ))}
+                      {/* Inline add-alias input, toggled by the + button */}
+                      {aliasInputFor === skill ? (
+                        <input
+                          autoFocus
+                          value={aliasDraft}
+                          onChange={(e) => setAliasDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.preventDefault(); addManualAlias(skill); }
+                            else if (e.key === "Escape") { setAliasInputFor(null); setAliasDraft(""); }
+                          }}
+                          onBlur={() => { setAliasInputFor(null); setAliasDraft(""); }}
+                          placeholder="Type alias, Enter to add"
+                          className="text-[10px] border border-[#4338CA]/40 rounded-full px-2 py-0.5 focus:outline-none focus:border-[#4338CA] w-44"
+                        />
+                      ) : (
+                        <button
+                          onClick={() => { setAliasInputFor(skill); setAliasDraft(""); }}
+                          title="Add a custom alias"
+                          className="inline-flex items-center justify-center w-5 h-5 rounded-full border border-dashed border-[#4338CA]/50 text-[#4338CA] hover:bg-[#4338CA]/10 text-xs font-bold leading-none"
+                        >
+                          +
                         </button>
-                      </div>
-                    )}
-
-                  {showAlias !== skill &&
-                    !skillAliases[skill]?.length &&
-                    !skillEquivalents[skill]?.length && (
+                      )}
+                      {/* AI suggestion panel toggle */}
                       <button
                         onClick={() => setShowAlias(skill)}
-                        className="text-[10px] text-[#1A2744]/70 hover:text-[#1A2744] px-1"
+                        className="text-[10px] text-[#1A2744]/70 hover:text-[#1A2744] hover:underline"
                       >
-                        + suggest aliases
+                        {skillAliases[skill]?.length > 0 || skillEquivalents[skill]?.length > 0
+                          ? "edit"
+                          : "suggest aliases"}
                       </button>
-                    )}
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

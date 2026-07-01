@@ -45,7 +45,7 @@ function fmtDate(iso) {
   }
 }
 
-export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, onArchive, onDelete, busy, currentUserName = "" }) {
+export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, onArchive, onUnarchive, onDelete, busy, currentUserName = "" }) {
   const ALL_USERS = "All users";
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState("All");
@@ -217,12 +217,16 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, on
                         onClick={(e) => e.stopPropagation()}
                         className="absolute right-0 top-7 z-10 w-36 bg-white border border-gray-200 rounded-lg shadow-lg py-1 text-sm"
                       >
-                        {/* No "Edit" — editing a job is done by Duplicate, which
-                            creates the next version and archives the original
-                            (ScorQ's edit-as-new-version flow). */}
-                        <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onDuplicate(job); }}>📑 Duplicate</button>
-                        {statusOf(job) !== "archived" && (
-                          <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onArchive(job); }}>🗄️ Archive</button>
+                        {/* Active jobs: Duplicate / Archive / Delete.
+                            Archived jobs: Un-archive / Delete. (No "Edit" — editing
+                            is done by Duplicate, ScorQ's edit-as-new-version flow.) */}
+                        {statusOf(job) === "archived" ? (
+                          <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onUnarchive?.(job); }}>♻️ Un-archive</button>
+                        ) : (
+                          <>
+                            <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onDuplicate(job); }}>📑 Duplicate</button>
+                            <button className="w-full text-left px-3 py-1.5 hover:bg-gray-50" onClick={() => { setMenuFor(null); onArchive(job); }}>🗄️ Archive</button>
+                          </>
                         )}
                         <button className="w-full text-left px-3 py-1.5 hover:bg-red-50 text-red-600" onClick={() => { setMenuFor(null); onDelete(job); }}>🗑️ Delete</button>
                       </div>
@@ -238,11 +242,11 @@ export default function JobDashboard({ jobs, onSelect, onCreate, onDuplicate, on
                 )}
                 {!job.created_by_name && <div className="mb-3" />}
 
-                {/* Meta row */}
+                {/* Meta row — skills + progress status (Feature 1: "N scored, M crafted") */}
                 <div className="mt-auto flex items-center justify-between text-xs text-gray-500 pt-3 border-t border-gray-100">
                   <span>💡 {skillsCount(job)} skill{skillsCount(job) === 1 ? "" : "s"}</span>
                   <span className="font-semibold text-[#1A2744]">
-                    👥 {job.candidates_scored_count || 0} scored
+                    👥 {job.candidates_scored_count || 0} scored, {job.crafted_count || 0} crafted
                   </span>
                 </div>
                 <div className="text-[10px] text-gray-400 mt-2">Created {fmtDate(job.created_at)}</div>

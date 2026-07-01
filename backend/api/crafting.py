@@ -354,6 +354,26 @@ async def update_crafted_resume(
     }
 
 
+@router.get("/job/{job_id}")
+async def list_crafted_for_job(
+    job_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """All crafted resumes for a job (Feature 1) — lets the Craft step rehydrate
+    which candidates were already crafted after a reload, so their Edit/Download
+    actions and "Crafted" badge persist. Keyed by score_id on the frontend."""
+    _get_user(authorization)
+    try:
+        res = supabase.table("crafted_resumes")\
+            .select("*")\
+            .eq("job_id", job_id)\
+            .order("created_at", desc=True)\
+            .execute()
+        return {"crafted": res.data or [], "total": len(res.data or [])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/upload-logo")
 async def upload_logo(
     file: UploadFile = File(...),

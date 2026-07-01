@@ -106,6 +106,25 @@ def _build_job_row(payload: dict, user_id: Optional[str]) -> dict:
             (good if imp == "good" else bonus if imp == "bonus" else must).append(name)
     must, good, bonus = must or [], good or [], bonus or []
 
+    # Manual aliases (Feature 2): recruiter-typed aliases the AI missed (e.g.
+    # OS = "Operating System" = "OperatingSystem"). They must reach the technical
+    # scorer, so fold them into skill_aliases (union, de-duped case-insensitively)
+    # while ALSO keeping the raw skill_manual_aliases map — persisted only if that
+    # column exists — so the editor can still render them as "manual" on re-open.
+    manual_aliases = payload.get("skill_manual_aliases") or {}
+    skill_aliases = dict(payload.get("skill_aliases") or {})
+    if isinstance(manual_aliases, dict):
+        for skill, extra in manual_aliases.items():
+            if not isinstance(extra, list):
+                continue
+            base = list(skill_aliases.get(skill) or [])
+            seen = {str(a).lower() for a in base}
+            for a in extra:
+                if a and str(a).lower() not in seen:
+                    base.append(a)
+                    seen.add(str(a).lower())
+            skill_aliases[skill] = base
+
     w = payload.get("scoring_weights") or {}
 
     def _int(*vals, default=0):
@@ -125,7 +144,7 @@ def _build_job_row(payload: dict, user_id: Optional[str]) -> dict:
         "must_have_skills": must,
         "good_to_have_skills": good,
         "bonus_skills": bonus,
-        "skill_aliases": payload.get("skill_aliases") or {},
+        "skill_aliases": skill_aliases,
         "weight_technical": _int(w.get("technical"), payload.get("weight_technical"), default=40),
         "weight_experience": _int(w.get("experience"), payload.get("weight_experience"), default=25),
         "weight_education": _int(w.get("education"), payload.get("weight_education"), default=15),
@@ -137,6 +156,7 @@ def _build_job_row(payload: dict, user_id: Optional[str]) -> dict:
         "required_skills": req,
         "skill_importance": payload.get("skill_importance") or {},
         "skill_equivalents": payload.get("skill_equivalents") or {},
+        "skill_manual_aliases": manual_aliases if isinstance(manual_aliases, dict) else {},
         "nice_to_have_skills": payload.get("nice_to_have_skills") or good,
         "experience_min": _int(payload.get("experience_min"), default=0),
         "experience_max": _int(payload.get("experience_max"), default=0),
@@ -182,6 +202,119 @@ def _candidate_counts() -> dict:
     return counts
 
 
+def _crafted_counts() -> dict:
+    """Live count of crafted resumes per job_id (for the dashboard status line)."""
+    counts: dict = {}
+    try:
+        cr = supabase.table("crafted_resumes").select("job_id").execute()
+        for r in (cr.data or []):
+            jid = r.get("job_id")
+            if jid:
+                counts[jid] = counts.get(jid, 0) + 1
+    except Exception:
+        pass
+    return counts
+
+
+def _remove_storage(bucket: str, paths: list) -> None:
+    """Best-effort delete of storage objects. Never raises — storage cleanup must
+    not block the DB delete (an orphaned file is far less harmful than a job that
+    won't delete). Logs failures so a misconfigured bucket stays diagnosable."""
+    paths = [p for p in (paths or []) if p]
+    if not paths:
+        return
+    try:
+        supabase.storage.from_(bucket).remove(paths)
+    except Exception as e:
+        logging.getLogger("scorcraft.jobs").warning(
+            "Storage cleanup on bucket %r failed for %d path(s): %s", bucket, len(paths), e)
+
+
+def _cascade_delete_job(job_id: str) -> dict:
+    """Permanently delete a job and EVERY piece of data linked to it (Feature 4).
+
+    Data lives as long as the job — so deleting the job is the single point where
+    it all gets cleaned up. Runs in FK-safe order and cleans Supabase storage too:
+
+      1. crafted_resumes  (+ formatted DOCX & rendered-doc cache in storage)
+      2. scores
+      3. scoring_sessions
+      4. candidates that no longer have ANY score in another job (+ resume files)
+      5. the job row itself
+
+    Explicit deletes (not relying on ON DELETE CASCADE) so this works regardless
+    of the base ScorQ FK definitions AND lets us collect storage paths to purge.
+    Returns a summary of what was removed.
+    """
+    log = logging.getLogger("scorcraft.jobs")
+    summary = {"crafted": 0, "scores": 0, "sessions": 0, "candidates": 0}
+
+    # ── Gather candidate ids + resume file paths for this job (via its scores) ──
+    scores = supabase.table("scores").select("id, candidate_id").eq("job_id", job_id).execute().data or []
+    candidate_ids = {s.get("candidate_id") for s in scores if s.get("candidate_id")}
+
+    # ── 1. crafted_resumes — purge formatted DOCX + rendered-doc cache first ──
+    crafts = supabase.table("crafted_resumes").select("id, formatted_file_path")\
+        .eq("job_id", job_id).execute().data or []
+    formatted_paths: list = []
+    for cr in crafts:
+        cid = cr.get("id")
+        if cr.get("formatted_file_path"):
+            formatted_paths.append(cr["formatted_file_path"])
+        if cid:
+            # Rendered-document cache written by api/download.py.
+            formatted_paths += [
+                f"cache/{cid}.docx.docx",
+                f"cache/{cid}.resume-pdf.pdf",
+                f"cache/{cid}.scorecard-pdf.pdf",
+                f"cache/{cid}.combined-pdf.pdf",
+                f"cache/{cid}.combined-docx.docx",
+            ]
+    _remove_storage(settings.FORMATTED_BUCKET, formatted_paths)
+    if crafts:
+        supabase.table("crafted_resumes").delete().eq("job_id", job_id).execute()
+    summary["crafted"] = len(crafts)
+
+    # ── 2. scores ──
+    if scores:
+        supabase.table("scores").delete().eq("job_id", job_id).execute()
+    summary["scores"] = len(scores)
+
+    # ── 3. scoring_sessions ──
+    try:
+        sess = supabase.table("scoring_sessions").select("id").eq("job_id", job_id).execute().data or []
+        if sess:
+            supabase.table("scoring_sessions").delete().eq("job_id", job_id).execute()
+        summary["sessions"] = len(sess)
+    except Exception as e:
+        log.warning("scoring_sessions cleanup for job %s failed: %s", job_id, e)
+
+    # ── 4. candidates — delete only those with no remaining score in ANY job ──
+    resume_paths: list = []
+    for cand_id in candidate_ids:
+        try:
+            remaining = supabase.table("scores").select("id").eq("candidate_id", cand_id)\
+                .limit(1).execute().data or []
+            if remaining:
+                continue  # still scored against another job → keep the candidate
+            crow = supabase.table("candidates").select("resume_storage_path")\
+                .eq("id", cand_id).execute().data or []
+            for c in crow:
+                if c.get("resume_storage_path"):
+                    resume_paths.append(c["resume_storage_path"])
+            supabase.table("candidates").delete().eq("id", cand_id).execute()
+            summary["candidates"] += 1
+        except Exception as e:
+            log.warning("Candidate cleanup for %s failed: %s", cand_id, e)
+    _remove_storage(settings.RESUME_STORAGE_BUCKET, resume_paths)
+
+    # ── 5. the job row itself ──
+    supabase.table("job_descriptions").delete().eq("id", job_id).execute()
+
+    log.info("Cascade-deleted job %s: %s", job_id, summary)
+    return summary
+
+
 @router.get("")
 async def list_jobs(
     created_by: Optional[str] = None,
@@ -205,12 +338,15 @@ async def list_jobs(
             needle = created_by.strip().lower()
             jobs = [j for j in jobs if (j.get("created_by_name") or "").lower() == needle]
         counts = _candidate_counts()
+        crafted = _crafted_counts()
 
         # Group by version lineage: root = parent_job_id or the job's own id.
         lineage: dict = {}
         for j in jobs:
             # Prefer the authoritative live count; fall back to stored column.
             j["candidates_scored_count"] = counts.get(j["id"], j.get("candidates_scored_count") or 0)
+            # Crafted-resume count powers the dashboard "N scored, M crafted" line.
+            j["crafted_count"] = crafted.get(j["id"], 0)
             root = j.get("parent_job_id") or j["id"]
             lineage.setdefault(root, []).append(j)
 
@@ -413,25 +549,54 @@ async def delete_job(
 ):
     """Archive a job (soft, default) or permanently delete it (hard=true).
 
-    Hard delete is blocked if candidates have been scored against the job — those
-    scores reference it, so the recruiter should archive instead to preserve them.
+    Feature 4/5: a hard delete now ALWAYS proceeds and cascades — it removes every
+    score, crafted resume, scoring session, orphaned candidate, and the uploaded
+    resume / formatted-doc files in Supabase storage that are linked to this job.
+    There is no longer a block that forces the recruiter to archive; the frontend
+    warns them about the data loss and lets them decide. Archiving (soft, the
+    default) only flips the status and preserves everything, fully browsable.
     """
     _get_user(authorization)
     try:
+        # Confirm the job exists so a bad id 404s instead of silently succeeding.
+        cur = supabase.table("job_descriptions").select("id").eq("id", job_id).execute()
+        if not cur.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+
         if hard:
-            scored = _candidate_counts().get(job_id, 0)
-            if scored:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Job has {scored} scored candidate(s); archive it instead of deleting.",
-                )
-            supabase.table("job_descriptions").delete().eq("id", job_id).execute()
-            return {"message": "Job deleted"}
+            summary = _cascade_delete_job(job_id)
+            return {"message": "Job deleted", "deleted": summary}
+
         supabase.table("job_descriptions")\
             .update({"status": "archived"})\
             .eq("id", job_id)\
             .execute()
         return {"message": "Job archived"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logging.getLogger("scorcraft.jobs").error("Delete job %s failed: %s", job_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to delete job: {e}")
+
+
+@router.post("/{job_id}/unarchive")
+async def unarchive_job(
+    job_id: str,
+    authorization: Optional[str] = Header(None),
+):
+    """Reactivate an archived job (Feature 5) so recruiters can resume work on it.
+    All its scores and crafted resumes are already intact — this just flips the
+    status back to active."""
+    _get_user(authorization)
+    try:
+        cur = supabase.table("job_descriptions").select("id").eq("id", job_id).execute()
+        if not cur.data:
+            raise HTTPException(status_code=404, detail="Job not found")
+        res = supabase.table("job_descriptions")\
+            .update({"status": "active"})\
+            .eq("id", job_id)\
+            .execute()
+        return {"message": "Job unarchived", "job": (res.data or [{}])[0]}
     except HTTPException:
         raise
     except Exception as e:
